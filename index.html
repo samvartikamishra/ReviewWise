@@ -293,9 +293,9 @@
       <label for="q">Product name or website link</label>
       <div class="field">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#5B6472" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
-        <input id="q" type="text" placeholder="e.g. Sony BRAVIA 8 II 65-inch" autocomplete="off">
+        <input id="q" type="text" placeholder="e.g. Samsung 55-inch Crystal 4K TV" autocomplete="off">
       </div>
-      <p class="hint">Enter a product name, or paste a product link.</p>
+      <p class="hint">Enter a product name, or paste an Amazon.in or Flipkart link.</p>
       <button class="btn-primary" type="submit">
         Analyze reviews
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg>
@@ -504,7 +504,7 @@ const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const plural = (n, word) => n + " " + word + (n === 1 ? "" : "s");
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const dateLabel = (d) => { if (!d) return "Undated"; const p = d.split("-"); return MONTHS[+p[1] - 1] + " " + (+p[2]) + ", " + p[0]; };
+const dateLabel = (d) => { if (!d) return "Undated"; const p = d.split("-"); return p[2] ? MONTHS[+p[1] - 1] + " " + (+p[2]) + ", " + p[0] : MONTHS[+p[1] - 1] + " " + p[0]; };
 
 const ICON_CHEV = '<svg class="chev" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#5B6472" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>';
 const ICON_OUT = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7"/><path d="M8 7h9v9"/></svg>';
