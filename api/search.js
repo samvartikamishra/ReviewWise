@@ -20,12 +20,12 @@
 // Without a key, the page shows the fictional sample so the site still works.
 
 const SAMPLE = require("./_sample.json");
-const { youtubeReviews } = require("./_youtube.js");
+const { youtubeReviews, isHindi } = require("./_youtube.js");
 const { flipkartReviews, amazonReviews, amazonLink, flipkartLink } = require("./_apify.js");
 
 const MODEL = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
 const API = "https://generativelanguage.googleapis.com/v1beta/models/";
-const MAX_REVIEWS = 120;  // after merging every source
+const MAX_REVIEWS = 200;  // after merging every source
 const TAG_BATCH = 30;     // reviews tagged per Gemini call in Task 3
 const PER_SEARCH = 20;    // asked of each Task 2 search
 const cache = new Map(); // repeat searches reuse results while this server copy stays warm
@@ -560,7 +560,7 @@ module.exports = async (req, res) => {
     const seen = [];
     const found = [];
     bySource.forEach((t) => t.reviews.forEach((r) => {
-      if (!r || typeof r.text !== "string") return;
+      if (!r || typeof r.text !== "string" || isHindi(r.text)) return; // English reviews only
       const key = r.text.toLowerCase().replace(/[^a-z0-9]/g, "");
       if (key.length < 20) return;
       if (seen.some((k) => k.includes(key.slice(0, 60)) || key.includes(k.slice(0, 60)))) return;
