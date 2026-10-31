@@ -1,0 +1,896 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ReviewWise AI</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  /* ---------- Design tokens (from the ReviewWise design) ---------- */
+  :root {
+    --navy: #1E3A8A;
+    --navy-soft: #E6EDFA;
+    --navy-tint: #EDF2FC;
+    --mark: #DCE5F7;
+    --bg: #F5F6F8;
+    --white: #FFFFFF;
+    --ink: #111827;
+    --body: #3D4654;
+    --muted: #5B6472;
+    --line: #E3E6EB;
+    --line-strong: #D3D8E0;
+    --line-blue: #C9D3E3;
+    --chip-bg: #F1F3F6;
+    --card-alt: #F7F8FA;
+    --thumb: #E6EAF0;
+    --green: #1F7A4D;
+    --red: #B83A32;
+  }
+
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font-family: "Inter", ui-sans-serif, system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+  a { color: var(--navy); }
+  button, input { font: inherit; }
+  input::placeholder { color: #6B7380; }
+  :focus-visible { outline: 2px solid var(--navy); outline-offset: 2px; border-radius: 4px; }
+  [hidden] { display: none !important; }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+  /* ---------- Shared pieces ---------- */
+  .site-header { background: var(--white); border-bottom: 1px solid var(--line); }
+  .site-header .inner { max-width: 1280px; margin: 0 auto; padding: 0 40px; height: 88px; display: flex; align-items: center; gap: 12px; }
+  .brand { display: flex; align-items: center; gap: 12px; text-decoration: none; margin-right: auto; color: var(--ink); font-size: 22px; font-weight: 500; letter-spacing: -0.01em; }
+  .tagline { font-size: 13px; color: var(--muted); }
+
+  .field { display: flex; align-items: center; gap: 12px; border: 1.5px solid var(--navy); border-radius: 8px; padding: 0 16px; min-height: 56px; background: var(--white); }
+  .field input { flex: 1; min-width: 0; border: 0; outline: none; background: transparent; color: var(--ink); font-size: 16px; }
+  .btn-primary { display: flex; align-items: center; justify-content: center; gap: 10px; min-height: 52px; padding: 0 26px; border-radius: 8px; border: 0; background: var(--navy); color: #FFFFFF; font-size: 15px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+  .btn-primary:disabled { opacity: 0.65; cursor: default; }
+  .link-btn { border: 0; background: transparent; padding: 12px 0; margin: -10px 0 -12px; font-size: 13px; font-weight: 600; color: var(--navy); text-decoration: underline; text-underline-offset: 3px; cursor: pointer; align-self: flex-start; }
+
+  /* ---------- Screen 1: search ---------- */
+  #search-screen { min-height: 100vh; display: flex; flex-direction: column; }
+  .hero { flex: 1; width: 100%; max-width: 880px; margin: 0 auto; padding: 88px 40px 64px; display: flex; flex-direction: column; align-items: center; gap: 36px; }
+  .hero-text { display: flex; flex-direction: column; align-items: center; gap: 16px; text-align: center; }
+  .eyebrow { margin: 0; font-size: 12px; font-weight: 500; letter-spacing: 0.04em; color: var(--navy); }
+  .hero h1 { margin: 0; font-size: clamp(36px, 6vw, 52px); line-height: 1.08; letter-spacing: -0.025em; font-weight: 600; }
+  .hero .sub { margin: 0; font-size: 18px; line-height: 1.55; color: var(--muted); max-width: 40ch; }
+  .search-card { width: 100%; max-width: 800px; background: var(--white); border: 1px solid var(--line); border-radius: 14px; padding: 32px; display: flex; flex-direction: column; gap: 10px; }
+  .search-card label { font-size: 13px; font-weight: 600; }
+  .search-card .field input { font-size: 17px; }
+  .hint { margin: 0 0 14px; font-size: 12.5px; color: var(--muted); }
+  .error { margin: 0; font-size: 14px; color: var(--red); }
+  .features { width: 100%; max-width: 800px; display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 24px 32px; }
+  .features div { display: flex; flex-direction: column; gap: 6px; }
+  .features h2 { margin: 4px 0 0; font-size: 14px; font-weight: 600; }
+  .features p { margin: 0; font-size: 13px; color: var(--muted); }
+  .page-footer { max-width: 1280px; width: 100%; margin: 0 auto; padding: 0 40px 40px; }
+  .page-footer div, .results-footer { border-top: 1px solid var(--line); padding-top: 24px; font-size: 12.5px; color: var(--muted); }
+
+  /* ---------- Screen 2: results ---------- */
+  .sticky-bar { position: fixed; top: 0; left: 0; right: 0; z-index: 40; background: rgba(255,255,255,0.97); border-bottom: 1px solid var(--line); box-shadow: 0 6px 20px rgba(17,24,39,0.08); transform: translateY(-100%); opacity: 0; visibility: hidden; transition: transform 240ms ease, opacity 200ms ease, visibility 0s linear 240ms; }
+  .sticky-bar.show { transform: translateY(0); opacity: 1; visibility: visible; transition: transform 240ms ease, opacity 240ms ease, visibility 0s; }
+  .sticky-bar .inner { max-width: 1200px; margin: 0 auto; padding: 10px clamp(16px, 3.4%, 40px); display: flex; align-items: center; gap: 12px 24px; flex-wrap: wrap; }
+  .sticky-home { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 44px; height: 44px; }
+  .sticky-product { flex: 1 1 220px; min-width: 0; display: flex; align-items: center; gap: 12px; }
+  .sticky-thumb { flex: none; width: 44px; height: 44px; border-radius: 8px; background: var(--thumb); display: inline-flex; align-items: center; justify-content: center; }
+  .sticky-names { min-width: 0; display: flex; flex-direction: column; }
+  .sticky-names b { font-size: 16px; font-weight: 700; letter-spacing: -0.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sticky-names span { font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sticky-form { flex: 1 1 380px; max-width: 560px; display: flex; gap: 8px; }
+  .sticky-form .field { flex: 1; min-height: 44px; padding: 0 12px; gap: 10px; }
+  .sticky-form .field input { font-size: 14.5px; }
+  .sticky-form .btn-primary { min-height: 44px; padding: 0 16px; font-size: 14px; gap: 8px; }
+
+  .results { max-width: 1200px; margin: 0 auto; padding: 32px 40px 48px; display: flex; flex-direction: column; gap: 32px; }
+  .results-search { display: flex; gap: 12px; flex-wrap: wrap; }
+  .results-search .field { flex: 1 1 420px; }
+  .results-search .btn-primary { min-height: 56px; }
+  .sample-note { margin: 0; font-size: 13.5px; line-height: 1.5; color: var(--body); background: var(--navy-tint); border-radius: 8px; padding: 10px 14px; }
+  .sample-note b { color: var(--navy); font-weight: 600; }
+  .status { background: var(--white); border: 1px solid var(--line); border-radius: 12px; padding: 28px; font-size: 15px; color: var(--body); }
+
+  .product { display: flex; flex-wrap: wrap; gap: 32px; align-items: center; }
+  .product figure { margin: 0; flex: 0 0 216px; }
+  .product .thumb { height: 188px; border-radius: 10px; background: var(--thumb); display: flex; align-items: center; justify-content: center; }
+  .product .info { flex: 1 1 360px; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+  .kicker { margin: 0; font-size: 12.5px; font-weight: 500; letter-spacing: 0.03em; color: var(--body); }
+  .product h1 { margin: 0; font-size: 44px; line-height: 1.05; letter-spacing: -0.02em; font-weight: 700; }
+  .product .desc { margin: 0; font-size: 16px; color: var(--muted); }
+  .ext-link { display: inline-flex; align-items: center; gap: 8px; align-self: flex-start; font-size: 15px; font-weight: 600; text-underline-offset: 4px; min-height: 44px; }
+
+  .card { background: var(--white); border: 1px solid var(--line); border-radius: 12px; padding: 28px; display: flex; flex-direction: column; gap: 20px; }
+  .card-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .card h2, .card h3.col-title { margin: 0; display: flex; align-items: center; gap: 10px; font-size: 19px; font-weight: 600; }
+  .card-head .aside { font-size: 12.5px; color: var(--muted); }
+
+  .verdict { background: var(--navy-soft); border-radius: 10px; padding: 24px; display: flex; flex-direction: column; gap: 18px; }
+  .verdict .headline { margin: 0; font-size: 26px; font-weight: 600; letter-spacing: -0.015em; line-height: 1.3; }
+  .stats { border-top: 1px solid var(--line-blue); padding-top: 16px; display: flex; flex-wrap: wrap; gap: 14px 40px; align-items: flex-start; }
+  .stats div { display: flex; flex-direction: column; gap: 2px; }
+  .stats b { font-size: 20px; font-weight: 700; letter-spacing: -0.01em; }
+  .stats span { font-size: 13px; color: var(--body); }
+  .trust { margin: 0; display: flex; gap: 8px; align-items: flex-start; font-size: 13.5px; line-height: 1.5; color: var(--body); }
+  .trust svg { flex: none; margin-top: 1px; }
+
+  .say { display: flex; flex-direction: column; gap: 20px; }
+  .two-col { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(380px, 100%), 1fr)); gap: 20px; align-items: start; }
+  .two-col .card { gap: 12px; }
+  .acc { list-style: none; margin: 0; padding: 0; }
+  .acc li + li { border-top: 1px solid var(--line); }
+  .acc-btn { width: 100%; display: flex; align-items: center; gap: 12px; padding: 14px 0; background: transparent; border: 0; text-align: left; cursor: pointer; color: var(--ink); }
+  .acc-btn .t { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+  .acc-btn .name { font-size: 15px; font-weight: 600; }
+  .acc-btn .meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .acc-btn .count { font-size: 13px; font-weight: 600; }
+  .acc-btn .count.positive { color: var(--green); }
+  .acc-btn .count.negative { color: var(--red); }
+  .later { font-size: 11.5px; font-weight: 600; color: var(--navy); border: 1px solid var(--navy); border-radius: 999px; padding: 1px 8px; white-space: nowrap; }
+  .chev { flex: none; transition: transform 200ms ease; }
+  .acc-btn[aria-expanded="true"] .chev { transform: rotate(180deg); }
+  .acc-body { padding: 0 0 18px; display: flex; flex-direction: column; gap: 12px; }
+  .acc-body .lead { margin: 0; font-size: 14px; line-height: 1.5; color: var(--body); }
+  .acc-body .when { margin: 0; font-size: 13px; color: var(--body); }
+  .acc-body .when b, .notes b { font-weight: 600; color: var(--ink); }
+  .notes { background: var(--bg); border-radius: 8px; padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; font-size: 13.5px; line-height: 1.5; color: var(--body); }
+  .notes p { margin: 0; }
+  .quote { margin: 0; font-size: 14px; line-height: 1.5; font-style: italic; color: var(--body); border-left: 2px solid var(--line-strong); padding-left: 10px; }
+  .quote span { font-style: normal; font-size: 12px; color: var(--muted); }
+  .btn-outline { align-self: flex-start; font-size: 14px; font-weight: 600; color: var(--navy); background: var(--white); border: 1px solid var(--navy); border-radius: 8px; padding: 0 16px; min-height: 44px; cursor: pointer; }
+
+  .card.tight { gap: 6px; }
+  .intro { margin: 0 0 12px; font-size: 14px; color: var(--muted); }
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; min-width: 680px; border-collapse: collapse; color: var(--ink); }
+  thead tr { border-bottom: 1px solid var(--line); }
+  thead th { padding: 0 16px 12px 0; text-align: left; font-size: 12.5px; font-weight: 500; color: var(--muted); }
+  tbody tr.expl + tr.row { border-top: 1px solid var(--line); }
+  tbody th, tbody td.side { padding: 22px 16px 10px 0; vertical-align: top; text-align: left; }
+  tbody th { font-weight: 600; font-size: 15px; }
+  tbody th small { display: block; margin-top: 4px; font-size: 12.5px; font-weight: 400; color: var(--muted); }
+  tbody th .see { display: block; margin-top: 10px; }
+  tbody th .see button { padding: 12px 0; margin: -12px 0; font-size: 12.5px; }
+  td.side .ttl { font-size: 15px; font-weight: 600; }
+  td.side p { margin: 6px 0 0; font-size: 14px; line-height: 1.5; color: var(--muted); }
+  td.side p.m { font-size: 12.5px; color: var(--body); }
+  td.expl-cell { padding: 0 0 22px; }
+  .explain { display: flex; gap: 10px; align-items: flex-start; background: var(--navy-tint); border-left: 3px solid var(--navy); border-radius: 0 8px 8px 0; padding: 10px 14px; }
+  .explain svg { flex: none; margin-top: 2px; }
+  .explain span { font-size: 14px; line-height: 1.5; color: var(--body); }
+  .explain b { font-weight: 600; color: var(--navy); }
+
+  .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); gap: 16px; }
+  .wbox { border-radius: 10px; padding: 18px; display: flex; flex-direction: column; gap: 10px; }
+  .wbox.yes { background: var(--navy-tint); }
+  .wbox.no { background: var(--bg); }
+  .wbox > span { font-size: 14px; font-weight: 600; }
+  .wbox.yes > span { color: var(--navy); }
+  .wbox ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  .wbox li { display: flex; gap: 10px; font-size: 14px; line-height: 1.5; color: var(--body); }
+  .wbox li svg { flex: none; margin-top: 3px; }
+  .wbox li b { font-weight: 600; color: var(--ink); }
+
+  .grid-3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr)); gap: 16px; }
+  .comp { background: var(--card-alt); border: 1px solid var(--line); border-radius: 10px; padding: 20px; display: flex; flex-direction: column; gap: 10px; }
+  .comp h3 { margin: 0; font-size: 19px; font-weight: 600; }
+  .comp .model { margin: 0; font-size: 13px; color: var(--muted); }
+  .tags { display: flex; gap: 6px; flex-wrap: wrap; }
+  .tags span { font-size: 12px; color: var(--body); background: var(--chip-bg); border-radius: 6px; padding: 3px 8px; }
+  .comp a { margin-top: auto; padding-top: 8px; display: inline-flex; align-items: center; gap: 8px; min-height: 44px; font-size: 14px; font-weight: 600; text-underline-offset: 4px; }
+  .fine { margin: 0; font-size: 12.5px; color: var(--muted); line-height: 1.5; }
+
+  .ask { background: var(--navy-soft); border-radius: 10px; padding: 20px; display: flex; flex-direction: column; gap: 12px; }
+  .ask label { font-size: 14px; font-weight: 600; }
+  .ask-row { display: flex; gap: 10px; flex-wrap: wrap; }
+  .ask-row .field { flex: 1 1 320px; min-height: 48px; padding: 0 14px; gap: 10px; }
+  .ask-row .field input { font-size: 15px; }
+  .ask-row .btn-primary { min-height: 48px; padding: 0 22px; }
+  .try { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .try > span { font-size: 12.5px; color: var(--body); }
+  .try button { font-size: 13px; color: var(--navy); background: var(--white); border: 1px solid var(--line-blue); border-radius: 999px; padding: 0 12px; min-height: 34px; cursor: pointer; }
+  .answer { border: 1px solid var(--line); border-radius: 10px; padding: 20px; display: flex; flex-direction: column; gap: 12px; }
+  .answer-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+  .answer-head p { margin: 0; font-size: 15px; font-weight: 600; }
+  .answer-head button { flex: none; padding: 10px 0; margin: -10px 0; }
+  .answer ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  .answer li { font-size: 14.5px; line-height: 1.5; color: var(--body); }
+  .answer li b { font-weight: 600; color: var(--ink); }
+  .answer .why { margin: 0; font-size: 14px; line-height: 1.5; color: var(--body); background: var(--navy-tint); border-radius: 8px; padding: 10px 14px; }
+  .answer .why b { font-weight: 600; color: var(--navy); }
+  .answer .small { margin: 0; font-size: 13px; color: var(--muted); }
+  .answer .none { margin: 0; font-size: 14px; color: var(--body); }
+
+  .chips { display: flex; gap: 8px; flex-wrap: wrap; }
+  .chip { font-size: 13px; font-weight: 600; border-radius: 999px; padding: 0 14px; min-height: 36px; cursor: pointer; background: var(--white); color: var(--ink); border: 1px solid var(--line-strong); }
+  .chip[aria-pressed="true"] { background: var(--navy); color: #FFFFFF; border-color: var(--navy); }
+  .filters { display: flex; flex-direction: column; gap: 10px; }
+  .strip-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  .strip-head > span { font-size: 13px; color: var(--muted); }
+  .arrows { display: flex; gap: 8px; }
+  .round { width: 44px; height: 44px; border-radius: 50%; border: 1px solid var(--line-strong); background: var(--white); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+  .strip { display: flex; gap: 16px; overflow-x: auto; scroll-snap-type: x mandatory; padding-bottom: 8px; }
+  .slot { flex: 0 0 min(320px, 85%); scroll-snap-align: start; display: flex; }
+  .empty { font-size: 14px; color: var(--muted); }
+
+  /* Review cards: three looks, so each store feels like its own source */
+  .rv { flex: 1; min-width: 0; padding: 16px; display: flex; flex-direction: column; gap: 8px; }
+  .rv .row { display: flex; align-items: center; gap: 8px; }
+  .rv .rec { margin-left: auto; font-size: 11.5px; color: var(--muted); }
+  .rv .txt { margin: 0; font-size: 14px; line-height: 1.55; color: var(--ink); }
+  .rv mark { background: var(--mark); color: var(--navy); font-weight: 600; padding: 0 2px; border-radius: 3px; }
+  .rv .src { margin-top: auto; padding-top: 6px; font-size: 12.5px; font-weight: 600; color: var(--navy); text-underline-offset: 3px; }
+  .rv .nolink { margin-top: auto; padding-top: 6px; font-size: 12px; color: var(--muted); }
+  .rv-a { background: var(--white); border: 1px solid var(--line-strong); border-radius: 8px; }
+  .rv-a .logo { width: 22px; height: 22px; border-radius: 5px; background: var(--ink); color: #FFFFFF; font-size: 12px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; }
+  .rv-a .site { font-size: 13px; font-weight: 700; }
+  .rv-a .stars { font-size: 15px; letter-spacing: 1px; }
+  .rv-a .rt, .rv-a .date { font-size: 12.5px; color: var(--muted); }
+  .rv-a .date { margin: 0; font-size: 12px; }
+  .rv-a .date b { font-weight: 600; color: var(--ink); }
+  .rv-b { background: var(--white); border: 1px solid var(--ink); border-radius: 2px; gap: 10px; }
+  .rv-b .site { font-size: 12px; font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase; }
+  .rv-b .d { margin-left: auto; font-size: 12px; color: var(--muted); }
+  .rv-b .score { background: var(--navy); color: #FFFFFF; font-size: 13px; font-weight: 700; padding: 3px 8px; border-radius: 2px; }
+  .rv-b .vb { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 600; }
+  .rv-c { background: #EEF1F5; border-radius: 18px; padding: 18px; gap: 10px; }
+  .rv-c .avatar { width: 32px; height: 32px; border-radius: 50%; background: var(--white); border: 1px solid var(--line-strong); display: inline-flex; align-items: center; justify-content: center; }
+  .rv-c .who { display: flex; flex-direction: column; }
+  .rv-c .who b { font-size: 13px; font-weight: 600; }
+  .rv-c .who span { font-size: 11.5px; color: var(--muted); }
+  .rv-c .squares { font-size: 12px; letter-spacing: 3px; }
+  .rv-c .txt { font-family: Georgia, "Times New Roman", serif; font-size: 15px; }
+
+  /* Side panel with the reviews behind a theme */
+  .overlay { position: fixed; inset: 0; z-index: 50; display: flex; justify-content: flex-end; }
+  .scrim { position: absolute; inset: 0; border: 0; padding: 0; margin: 0; background: rgba(17,24,39,0.4); cursor: pointer; }
+  .panel { position: relative; width: min(760px, 100%); height: 100%; overflow-y: auto; background: var(--bg); box-shadow: -12px 0 32px rgba(17,24,39,0.18); padding: 28px; display: flex; flex-direction: column; gap: 20px; }
+  .panel-head { display: flex; align-items: flex-start; gap: 16px; }
+  .panel-head div { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+  .panel-head h2 { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: -0.01em; }
+  .panel-head p { margin: 0; font-size: 14px; color: var(--muted); }
+  .square-btn { flex: none; width: 44px; height: 44px; border-radius: 8px; border: 1px solid var(--line-strong); background: var(--white); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+
+  @media (max-width: 700px) {
+    .site-header .inner, .results, .page-footer { padding-left: 20px; padding-right: 20px; }
+    .hero { padding: 48px 20px 48px; }
+    .search-card, .card { padding: 20px; }
+    .tagline { display: none; }
+    .product h1 { font-size: 34px; }
+    .product figure { flex-basis: 100%; }
+    .verdict .headline { font-size: 21px; }
+    .results-search .btn-primary { width: 100%; }
+    .panel { padding: 20px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .sticky-bar, .sticky-bar.show, .chev { transition: none; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ======================= Screen 1: search ======================= -->
+<div id="search-screen">
+  <header class="site-header">
+    <div class="inner">
+      <a class="brand" href="/" data-home>
+        <svg width="32" height="32" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="#1E3A8A"/><path d="M9 12V9h3M20 9h3v3M23 20v3h-3M12 23H9v-3" fill="none" stroke="#FFFFFF" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M12.5 13.5h7M12.5 16h7M12.5 18.5h4.5" stroke="#FFFFFF" stroke-width="1.6" stroke-linecap="round"/></svg>
+        ReviewWise AI
+      </a>
+      <span class="tagline">A clearer view before you buy.</span>
+    </div>
+  </header>
+
+  <main class="hero">
+    <div class="hero-text">
+      <p class="eyebrow">BUY WITH PERSPECTIVE</p>
+      <h1>Many reviews. One clear picture.</h1>
+      <p class="sub">See what buyers love, what keeps coming up, and what to know before you choose.</p>
+    </div>
+
+    <form class="search-card" id="form-main" role="search">
+      <label for="q">Product name or website link</label>
+      <div class="field">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#5B6472" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <input id="q" type="text" placeholder="e.g. Sony BRAVIA 8 II 65-inch" autocomplete="off">
+      </div>
+      <p class="hint">Enter a product name, or paste a product link.</p>
+      <button class="btn-primary" type="submit">
+        Analyze reviews
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg>
+      </button>
+      <p class="error" id="error-main" role="alert" hidden></p>
+    </form>
+
+    <div class="features">
+      <div>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#1E3A8A" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-5-5L5 21"/></svg>
+        <h2>Confirm the product</h2>
+        <p>Start with the official listing.</p>
+      </div>
+      <div>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#1E3A8A" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5h11v8H8l-4 3z"/><path d="M15 9h5v8l-3-2h-6v-2"/></svg>
+        <h2>Look across sources</h2>
+        <p>See where the evidence comes from.</p>
+      </div>
+      <div>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#1E3A8A" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M7 12h10M10 17h4"/></svg>
+        <h2>Understand the trade-offs</h2>
+        <p>Recurring praise and concerns, with the reviews behind them.</p>
+      </div>
+    </div>
+  </main>
+
+  <footer class="page-footer"><div>Less review-reading. More clarity.</div></footer>
+</div>
+
+<!-- ======================= Screen 2: results ======================= -->
+<div id="results-screen" hidden>
+
+  <div class="sticky-bar" id="sticky" aria-hidden="true">
+    <div class="inner">
+      <a class="sticky-home" href="/" data-home aria-label="ReviewWise home" tabindex="-1">
+        <svg width="28" height="28" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="#1E3A8A"/><path d="M9 12V9h3M20 9h3v3M23 20v3h-3M12 23H9v-3" fill="none" stroke="#FFFFFF" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M12.5 13.5h7M12.5 16h7M12.5 18.5h4.5" stroke="#FFFFFF" stroke-width="1.6" stroke-linecap="round"/></svg>
+      </a>
+      <div class="sticky-product">
+        <span class="sticky-thumb" aria-hidden="true"><svg width="30" height="22" viewBox="0 0 150 110"><rect x="5" y="6" width="140" height="80" rx="3" fill="#1A1D22"/><rect x="66" y="86" width="18" height="10" fill="#2A2D33"/><rect x="40" y="96" width="70" height="5" rx="2.5" fill="#2A2D33"/></svg></span>
+        <span class="sticky-names"><b id="sticky-name"></b><span id="sticky-sub"></span></span>
+      </div>
+      <form class="sticky-form" id="form-sticky" role="search">
+        <label for="q-sticky" class="sr-only">Search a product</label>
+        <div class="field">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#5B6472" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          <input id="q-sticky" type="text" placeholder="Search a product or paste a link" autocomplete="off" tabindex="-1">
+        </div>
+        <button class="btn-primary" type="submit" tabindex="-1">Analyze
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg>
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <header class="site-header">
+    <div class="inner">
+      <a class="brand" href="/" data-home>
+        <svg width="32" height="32" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="#1E3A8A"/><path d="M9 12V9h3M20 9h3v3M23 20v3h-3M12 23H9v-3" fill="none" stroke="#FFFFFF" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M12.5 13.5h7M12.5 16h7M12.5 18.5h4.5" stroke="#FFFFFF" stroke-width="1.6" stroke-linecap="round"/></svg>
+        ReviewWise AI
+      </a>
+      <span class="tagline">A clearer view before you buy.</span>
+    </div>
+  </header>
+
+  <main class="results">
+    <form class="results-search" id="form-results" role="search">
+      <div class="field">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#5B6472" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <label for="q2" class="sr-only">Search a product</label>
+        <input id="q2" type="text" placeholder="Search a product or paste a link" autocomplete="off">
+      </div>
+      <button class="btn-primary" type="submit">
+        Analyze reviews
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg>
+      </button>
+    </form>
+
+    <p class="status" id="status" role="status" hidden></p>
+    <p class="sample-note" id="sample-note" hidden><b>Sample results.</b> Real review collection isn’t connected yet, so every search shows this fictional TV.</p>
+
+    <div id="content" hidden>
+      <div style="display: flex; flex-direction: column; gap: 32px">
+
+        <section class="product" id="product" aria-labelledby="pname">
+          <figure>
+            <div class="thumb"><svg width="150" height="110" viewBox="0 0 150 110" aria-hidden="true"><rect x="5" y="6" width="140" height="80" rx="3" fill="#1A1D22"/><rect x="9" y="10" width="132" height="72" rx="1.5" fill="#23272E"/><path d="M9 10h60L30 82H9z" fill="#2C3139" opacity=".7"/><rect x="66" y="86" width="18" height="10" fill="#2A2D33"/><rect x="40" y="96" width="70" height="5" rx="2.5" fill="#2A2D33"/></svg></div>
+          </figure>
+          <div class="info" id="product-info"></div>
+        </section>
+
+        <section class="say" aria-labelledby="say">
+          <div class="card">
+            <h2 id="say"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#1E3A8A" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5h11v8H8l-4 3z"/><path d="M15 9h5v8l-3-2h-6v-2"/></svg>What buyers are saying</h2>
+            <div class="verdict" id="verdict"></div>
+          </div>
+          <div class="two-col">
+            <div class="card">
+              <h3 class="col-title"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#1F7A4D" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 10v11H4V10z"/><path d="M7 10l4-7c1.5 0 2.5 1 2.5 2.5V9h5.5a2 2 0 0 1 2 2.3l-1.3 7.5a2.5 2.5 0 0 1-2.5 2.2H7"/></svg>What buyers like</h3>
+              <ul class="acc" id="likes"></ul>
+            </div>
+            <div class="card">
+              <h3 class="col-title"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#B83A32" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4h16v12H9l-5 4z"/><path d="M12 7.5v4M12 13.5h.01"/></svg>Recurring concerns</h3>
+              <ul class="acc" id="concerns"></ul>
+              <button type="button" class="btn-outline" id="concerns-more" hidden></button>
+            </div>
+          </div>
+        </section>
+
+        <section class="card tight" aria-labelledby="disagree" id="disagree-section">
+          <div class="card-head">
+            <h2 id="disagree"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#1E3A8A" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h15"/><path d="m15 4 4 4-4 4"/><path d="M20 16H5"/><path d="m9 12-4 4 4 4"/></svg>Where reviewers disagree</h2>
+          </div>
+          <p class="intro">The same feature can land differently depending on how and where it’s used. Explanations are suggested by the data, not confirmed.</p>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th scope="col">Theme</th><th scope="col">One perspective</th><th scope="col">Another perspective</th></tr></thead>
+              <tbody id="disagree-rows"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="card" aria-labelledby="warranty" id="warranty-section">
+          <div class="card-head">
+            <h2 id="warranty"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#1E3A8A" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 4.5 6v5.5c0 4.6 3.2 8.4 7.5 9.5 4.3-1.1 7.5-4.9 7.5-9.5V6z"/><path d="m9 12 2 2 4-4"/></svg>Warranty</h2>
+            <span class="aside" id="warranty-note"></span>
+          </div>
+          <div class="grid-2" id="warranty-body"></div>
+        </section>
+
+        <section class="card" aria-labelledby="comp" id="comp-section">
+          <div class="card-head">
+            <h2 id="comp"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#1E3A8A" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="7" height="14" rx="1.5"/><rect x="14" y="5" width="7" height="14" rx="1.5"/></svg>Closest competitors</h2>
+          </div>
+          <div class="grid-3" id="comp-list"></div>
+          <p class="fine" id="comp-note"></p>
+        </section>
+
+        <section class="card" aria-labelledby="all">
+          <h2 id="all"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#1E3A8A" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 6h13M8 12h13M8 18h13"/><path d="M3 6h.01M3 12h.01M3 18h.01"/></svg>All reviews</h2>
+
+          <form class="ask" id="ask-form">
+            <label for="ask">Ask about your situation</label>
+            <div class="ask-row">
+              <div class="field">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#1E3A8A" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none"><path d="M12 3l1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg>
+                <input id="ask" type="text" autocomplete="off" placeholder="e.g. Should I buy this if my living room gets a lot of sun?">
+              </div>
+              <button class="btn-primary" type="submit">Ask</button>
+            </div>
+            <div class="try" id="try"><span>Try:</span></div>
+          </form>
+
+          <div id="answer"></div>
+
+          <div class="filters">
+            <div class="chips" role="group" aria-label="Filter by sentiment" id="sent-chips"></div>
+            <div class="chips" role="group" aria-label="Filter by store" id="store-chips"></div>
+          </div>
+
+          <div class="strip-head">
+            <span id="all-count"></span>
+            <div class="arrows">
+              <button type="button" class="round" aria-label="Previous reviews" data-scroll="all-strip" data-dir="-1"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1E3A8A" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg></button>
+              <button type="button" class="round" aria-label="Next reviews" data-scroll="all-strip" data-dir="1"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1E3A8A" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></button>
+            </div>
+          </div>
+          <div class="strip" id="all-strip"></div>
+        </section>
+
+        <footer class="results-footer">Less review-reading. More clarity.</footer>
+      </div>
+    </div>
+  </main>
+
+  <!-- Reviews behind a theme -->
+  <div class="overlay" id="overlay" hidden>
+    <button type="button" class="scrim" aria-label="Close reviews" data-close></button>
+    <aside class="panel" role="dialog" aria-modal="true" aria-labelledby="panel-title">
+      <div class="panel-head">
+        <div><h2 id="panel-title"></h2><p id="panel-sub"></p></div>
+        <button type="button" class="square-btn" aria-label="Close" data-close id="panel-close"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#111827" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+      </div>
+      <div class="chips" role="group" aria-label="Which reviews" id="panel-chips"></div>
+      <div class="strip-head">
+        <span id="panel-count"></span>
+        <div class="arrows">
+          <button type="button" class="round" aria-label="Previous reviews" data-scroll="panel-strip" data-dir="-1"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1E3A8A" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg></button>
+          <button type="button" class="round" aria-label="Next reviews" data-scroll="panel-strip" data-dir="1"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1E3A8A" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></button>
+        </div>
+      </div>
+      <div class="strip" id="panel-strip"></div>
+      <p class="fine">Highlighted sentences are the ones counted for this aspect.</p>
+    </aside>
+  </div>
+</div>
+
+<script>
+/* ==========================================================================
+   ReviewWise AI page logic
+   1. The search box calls /api/search?q=...  (the file api/search.js)
+   2. Whatever JSON comes back is drawn on the results screen.
+   To show real reviews later, only api/search.js needs to change.
+   ========================================================================== */
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const plural = (n, word) => n + " " + word + (n === 1 ? "" : "s");
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const dateLabel = (d) => { if (!d) return "Undated"; const p = d.split("-"); return MONTHS[+p[1] - 1] + " " + (+p[2]) + ", " + p[0]; };
+
+const ICON_CHEV = '<svg class="chev" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#5B6472" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>';
+const ICON_OUT = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7"/><path d="M8 7h9v9"/></svg>';
+const ICON_TICK = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1E3A8A" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 5 5L20 7"/></svg>';
+const ICON_CROSS = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#111827" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>';
+const ICON_BULB = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1E3A8A" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18h6M10 21h4"/><path d="M12 3a6 6 0 0 0-3.6 10.8c.6.5 1 1.2 1 2V16h5.2v-.2c0-.8.4-1.5 1-2A6 6 0 0 0 12 3z"/></svg>';
+const ICON_SHIELD = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#1E3A8A" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 5 6v5c0 4.5 3 8.3 7 10 4-1.7 7-5.5 7-10V6z"/><path d="m9.5 12 2 2 3.5-4"/></svg>';
+
+let D = null;              // the analysis returned by the backend
+let S = {};                // what the person has opened, filtered or asked
+let lastFocus = null;
+
+/* ---------------- Screens and searching ---------------- */
+
+function showScreen(name) {
+  $("search-screen").hidden = name !== "search";
+  $("results-screen").hidden = name !== "results";
+  window.scrollTo(0, 0);
+  updateSticky();
+}
+
+async function search(query, push) {
+  const q = query.trim();
+  if (!q) {
+    $("error-main").textContent = "Enter a product name or paste a product link.";
+    $("error-main").hidden = false;
+    showScreen("search");
+    $("q").focus();
+    return;
+  }
+  if (push) history.pushState({ q }, "", "?q=" + encodeURIComponent(q));
+  ["q", "q2", "q-sticky"].forEach((id) => { $(id).value = q; });
+  $("error-main").hidden = true;
+
+  showScreen("results");
+  $("content").hidden = true;
+  $("sample-note").hidden = true;
+  $("status").hidden = false;
+  $("status").textContent = "Finding and reading reviews for “" + q + "”. This usually takes 20 to 60 seconds.";
+  document.querySelectorAll("form[role=search] button").forEach((b) => { b.disabled = true; });
+
+  try {
+    const res = await fetch("/api/search?q=" + encodeURIComponent(q));
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error || "The search didn’t work. Try again in a moment.");
+    D = body;
+    S = { acc: null, more: false, sent: "all", store: "all", asked: "", panel: null, group: 0 };
+    $("ask").value = "";
+    renderAll();
+    $("status").hidden = true;
+    $("content").hidden = false;
+    $("sample-note").hidden = !D.sample;
+  } catch (err) {
+    const offline = location.protocol === "file:";
+    $("status").textContent = offline
+      ? "Search only works on the deployed site, because it needs the /api/search backend. Open your Vercel link instead of the file on your computer."
+      : "Could not load reviews for “" + q + "”. " + err.message;
+  } finally {
+    document.querySelectorAll("form[role=search] button").forEach((b) => { b.disabled = false; });
+  }
+}
+
+[["form-main", "q"], ["form-results", "q2"], ["form-sticky", "q-sticky"]].forEach(([formId, inputId]) => {
+  $(formId).addEventListener("submit", (e) => { e.preventDefault(); search($(inputId).value, true); });
+});
+
+document.querySelectorAll("[data-home]").forEach((a) => a.addEventListener("click", (e) => {
+  e.preventDefault();
+  history.pushState({}, "", location.pathname);
+  closePanel();
+  showScreen("search");
+}));
+
+window.addEventListener("popstate", () => {
+  const q = new URLSearchParams(location.search).get("q");
+  closePanel();
+  if (q) search(q, false); else showScreen("search");
+});
+
+/* ---------------- Drawing the results ---------------- */
+
+function renderAll() {
+  assignLooks();
+  const p = D.product || {};
+  $("sticky-name").textContent = p.name || "";
+  $("sticky-sub").textContent = p.short || "";
+  $("product-info").innerHTML =
+    (p.kicker ? '<p class="kicker">' + esc(p.kicker) + "</p>" : "") +
+    '<h1 id="pname">' + esc(p.name) + "</h1>" +
+    (p.description ? '<p class="desc">' + esc(p.description) + "</p>" : "") +
+    (p.url ? '<a class="ext-link" href="' + esc(p.url) + '" target="_blank" rel="noopener">' + esc(p.urlLabel || "Official product listing") + ICON_OUT + "</a>" : "");
+
+  const sm = D.summary || {};
+  $("verdict").innerHTML =
+    '<p class="headline">' + esc(sm.headline) + "</p>" +
+    '<div class="stats">' + (sm.stats || []).map((s) => "<div><b>" + esc(s.value) + "</b><span>" + esc(s.label) + "</span></div>").join("") + "</div>" +
+    (sm.note ? '<p class="trust">' + ICON_SHIELD + "<span>" + esc(sm.note) + "</span></p>" : "");
+
+  renderAccordions();
+  renderDisagreements();
+  renderWarranty();
+  renderCompetitors();
+  $("try").innerHTML = "<span>Try:</span>" + ((D.ask && D.ask.suggestions) || []).map((s) => '<button type="button" data-suggest="' + esc(s) + '">' + esc(s) + "</button>").join("");
+  renderAllReviews();
+}
+
+function panelTotal(key) {
+  const p = D.panels && D.panels[key];
+  return p ? p.groups.reduce((n, g) => n + g.ids.length, 0) : 0;
+}
+
+function accItem(item, first) {
+  const open = S.acc === item.id;
+  const total = panelTotal(item.panel);
+  return "<li>" +
+    '<button type="button" class="acc-btn" data-acc="' + esc(item.id) + '" aria-expanded="' + open + '" aria-controls="acc-' + esc(item.id) + '">' +
+      '<span class="t"><span class="name">' + esc(item.title) + '</span><span class="meta"><span class="count ' + esc(item.tone) + '">' + item.count + " of " + item.of + " " + esc(item.tone) + "</span>" +
+      (item.later ? '<span class="later">Shows up later</span>' : "") + "</span></span>" + ICON_CHEV +
+    "</button>" +
+    (open ? '<div class="acc-body" id="acc-' + esc(item.id) + '">' +
+      '<p class="lead">' + esc(item.text) + "</p>" +
+      (item.when ? '<p class="when"><b>When it shows up:</b> ' + esc(item.when) + "</p>" : "") +
+      (item.notes && item.notes.length ? '<div class="notes">' + item.notes.map((n) => "<p><b>" + esc(n.label) + ":</b> " + esc(n.text) + "</p>").join("") + "</div>" : "") +
+      (item.quotes || []).map((q) => '<p class="quote">“' + esc(q.text) + "” <span>" + esc(q.ref) + "</span></p>").join("") +
+      (total ? '<button type="button" class="link-btn" data-open="' + esc(item.panel) + '" data-group="' + (item.panelGroup != null ? item.panelGroup : (item.tone === "negative" ? "neg" : 0)) + '">See all ' + plural(total, "review") + "</button>" : "") +
+    "</div>" : "") +
+  "</li>";
+}
+
+function renderAccordions() {
+  $("likes").innerHTML = (D.likes || []).map(accItem).join("");
+  const concerns = D.concerns || [];
+  const shown = D.concernsShown || concerns.length;
+  const visible = S.more ? concerns : concerns.slice(0, shown);
+  $("concerns").innerHTML = visible.map(accItem).join("");
+  const hiddenCount = concerns.length - shown;
+  $("concerns-more").hidden = hiddenCount <= 0;
+  $("concerns-more").textContent = S.more ? "Show fewer concerns" : "Show " + hiddenCount + " more concern" + (hiddenCount === 1 ? "" : "s");
+  $("concerns-more").setAttribute("aria-expanded", String(!!S.more));
+}
+
+function renderDisagreements() {
+  const rows = D.disagreements || [];
+  $("disagree-section").hidden = !rows.length;
+  $("disagree-rows").innerHTML = rows.map((r) => {
+    const side = (s) => '<td class="side"><div class="ttl">' + esc(s.title) + "</div><p>" + esc(s.text) + '</p><p class="m">' + esc(s.meta) + "</p></td>";
+    return '<tr class="row"><th scope="row">' + esc(r.theme) + "<small>" + esc(r.count) + "</small>" +
+      (r.panel ? '<span class="see"><button type="button" class="link-btn" data-open="' + esc(r.panel) + '" data-group="0">See the reviews</button></span>' : "") + "</th>" +
+      side(r.a) + side(r.b) + "</tr>" +
+      '<tr class="expl"><td></td><td colspan="2" class="expl-cell"><div class="explain">' + ICON_BULB + "<span><b>Possible explanation:</b> " + esc(r.explanation) + "</span></div></td></tr>";
+  }).join("");
+}
+
+function renderWarranty() {
+  const w = D.warranty;
+  $("warranty-section").hidden = !w;
+  if (!w) return;
+  $("warranty-note").textContent = w.note || "";
+  $("warranty-body").innerHTML =
+    '<div class="wbox yes"><span>Covered</span><ul>' + (w.covered || []).map((c) => "<li>" + ICON_TICK + "<span>" + esc(c) + "</span></li>").join("") + "</ul></div>" +
+    '<div class="wbox no"><span>' + esc(w.notCoveredTitle || "Not covered") + "</span><ul>" +
+      (w.notCovered || []).map((c) => "<li>" + ICON_CROSS + "<span>" + esc(c.text) + (c.count ? " <b>" + esc(c.count) + "</b> " + esc(c.after || "") : "") + "</span></li>").join("") + "</ul></div>";
+}
+
+function renderCompetitors() {
+  const list = D.competitors || [];
+  $("comp-section").hidden = !list.length;
+  $("comp-list").innerHTML = list.map((c) =>
+    '<article class="comp"><p class="kicker">' + esc(c.brand) + "</p><h3>" + esc(c.name) + '</h3><p class="model">' + esc(c.model) + "</p>" +
+    '<div class="tags">' + (c.tags || []).map((t) => "<span>" + esc(t) + "</span>").join("") + "</div>" +
+    (c.url ? '<a href="' + esc(c.url) + '" target="_blank" rel="noopener">' + esc(c.site || "Official site") + ICON_OUT + "</a>" : "") + "</article>").join("");
+  $("comp-note").textContent = D.competitorsNote || "";
+}
+
+/* ---------------- Review cards ---------------- */
+
+function highlight(text, phrases) {
+  let out = "", pos = 0;
+  while (pos < text.length) {
+    let best = -1, bestEx = "";
+    phrases.forEach((ex) => { const i = text.indexOf(ex, pos); if (i >= 0 && (best < 0 || i < best || (i === best && ex.length > bestEx.length))) { best = i; bestEx = ex; } });
+    if (best < 0) { out += esc(text.slice(pos)); break; }
+    out += esc(text.slice(pos, best)) + "<mark>" + esc(bestEx) + "</mark>";
+    pos = best + bestEx.length;
+  }
+  return out;
+}
+
+// Each store gets its own card look, in the order stores first appear in the data.
+let siteLooks = {};
+function assignLooks() {
+  siteLooks = {};
+  (D.reviews || []).forEach((r) => {
+    if (!siteLooks[r.site]) siteLooks[r.site] = ["a", "b", "c"][Object.keys(siteLooks).length % 3];
+  });
+}
+function lookFor(site) { return siteLooks[site] || "a"; }
+
+function reviewCard(r, themes) {
+  const k = Math.round(r.rating || 0);
+  const phrases = [];
+  (themes || []).forEach((t) => ((r.hl && r.hl[t]) || []).forEach((x) => { if (phrases.indexOf(x) < 0) phrases.push(x); }));
+  const body = '<p class="txt">' + highlight(r.text || "", phrases) + "</p>";
+  const link = r.url ? '<a class="src" href="' + esc(r.url) + '" target="_blank" rel="noopener">View on ' + esc(r.site) + " ↗</a>" : '<span class="nolink">No link to the original</span>';
+  const rec = '<span class="rec">Record ' + esc(r.id) + "</span>";
+  const look = lookFor(r.site);
+  let html;
+  if (look === "a") {
+    html = '<article class="rv rv-a"><div class="row"><span class="logo" aria-hidden="true">' + esc((r.site || "?").charAt(0)) + '</span><span class="site">' + esc(r.site) + "</span>" + rec + "</div>" +
+      (k ? '<div class="row"><span class="stars" role="img" aria-label="Rated ' + k + ' out of 5">' + "★".repeat(k) + "☆".repeat(5 - k) + '</span><span class="rt">' + k + ".0 out of 5</span></div>" : '<div class="row"><span class="rt">No star rating</span></div>') +
+      '<p class="date">Reviewed on ' + dateLabel(r.date) + (r.verified ? " · <b>Verified Purchase</b>" : "") + "</p>" + body + link + "</article>";
+  } else if (look === "b") {
+    html = '<article class="rv rv-b"><div class="row"><span class="site">' + esc(r.site) + '</span><span class="d">' + dateLabel(r.date) + "</span></div>" +
+      '<div class="row" style="flex-wrap: wrap; gap: 10px">' + (k ? '<span class="score">' + k + "/5</span>" : "") +
+      (r.verified ? '<span class="vb"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#111827" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 5 5L20 7"/></svg>Verified buyer</span>' : "") + rec + "</div>" + body + link + "</article>";
+  } else {
+    html = '<article class="rv rv-c"><div class="row" style="gap: 10px"><span class="avatar" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#5B6472" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg></span>' +
+      '<span class="who"><b>' + esc(r.site) + " shopper</b><span>" + dateLabel(r.date) + "</span></span>" + rec + "</div>" +
+      (k ? '<span class="squares" role="img" aria-label="Rated ' + k + ' out of 5">' + "■".repeat(k) + "□".repeat(5 - k) + "</span>" : "") + body + link + "</article>";
+  }
+  return '<div class="slot">' + html + "</div>";
+}
+
+/* ---------------- Ask about your situation + filters ---------------- */
+
+function askState() {
+  const ask = D.ask || {};
+  const asked = (S.asked || "").trim();
+  const ql = asked.toLowerCase();
+  const topics = asked ? (ask.topics || []).filter((t) => new RegExp(t.pattern).test(ql)) : [];
+  const themes = [];
+  topics.forEach((t) => t.themes.forEach((x) => { if (themes.indexOf(x) < 0) themes.push(x); }));
+  const contexts = topics.map((t) => t.context).filter(Boolean);
+  const mapTo = ask.themePanels || {};
+
+  const lines = themes.map((t) => {
+    const panel = D.panels[mapTo[t] || t];
+    if (!panel) return null;
+    const by = {}; panel.groups.forEach((g) => { by[g.label] = g.ids.length; });
+    const total = panel.groups.reduce((n, g) => n + g.ids.length, 0);
+    const pos = mapTo[t] ? panel.groups[0].ids.length : (by.Positive || 0);
+    const neg = mapTo[t] ? (panel.groups[1] ? panel.groups[1].ids.length : 0) : (by.Negative || 0);
+    const mixed = mapTo[t] ? 0 : (by.Mixed || 0);
+    return { title: panel.title, text: total + (total === 1 ? " review mentions it: " : " reviews mention it: ") + pos + " positive, " + neg + " negative" + (mixed ? ", " + mixed + " mixed" : "") + "." };
+  }).filter(Boolean);
+
+  const stance = {};
+  themes.forEach((t) => {
+    const panel = D.panels[mapTo[t] || t]; if (!panel) return;
+    panel.groups.forEach((g, i) => {
+      const s = mapTo[t] ? (i === 0 ? "positive" : "negative") : g.label.toLowerCase();
+      g.ids.forEach((id) => { (stance[id] = stance[id] || []).push(s); });
+    });
+  });
+  const sentOf = (r) => {
+    const s = asked && topics.length ? stance[r.id] : null;
+    if (!s) return r.sentiment;
+    const pos = s.indexOf("positive") >= 0, neg = s.indexOf("negative") >= 0;
+    return (pos && neg) || s.indexOf("mixed") >= 0 ? "mixed" : pos ? "positive" : "negative";
+  };
+  const matches = (r) => themes.some((t) => r.hl && r.hl[t]) || contexts.some((c) => (r.contexts || []).indexOf(c) >= 0);
+  return { asked, topics, themes, lines, notes: topics.map((t) => t.note).filter(Boolean), sentOf, matches };
+}
+
+function renderAllReviews() {
+  const A = askState();
+  const reviews = D.reviews || [];
+
+  if (!A.asked) $("answer").innerHTML = "";
+  else if (!A.topics.length) $("answer").innerHTML = '<div class="answer"><div class="answer-head"><p>“' + esc(A.asked) + '”</p><button type="button" class="link-btn" data-clear>Clear</button></div><p class="none">None of these reviews talk about that. Try asking about brightness, gaming, sports, sound, apps or value.</p></div>';
+  else $("answer").innerHTML = '<div class="answer"><div class="answer-head"><p>“' + esc(A.asked) + '”</p><button type="button" class="link-btn" data-clear>Clear</button></div>' +
+    "<ul>" + A.lines.map((l) => "<li><b>" + esc(l.title) + ":</b> " + esc(l.text) + "</li>").join("") + "</ul>" +
+    (A.notes.length ? '<p class="why"><b>Possible explanation:</b> ' + esc(A.notes.join(" ")) + "</p>" : "") +
+    '<p class="small">ReviewWise doesn’t make buying calls. It shows what owners in a similar situation report, and the reviews below are filtered to match.</p></div>';
+
+  const base = A.asked && A.topics.length ? reviews.filter(A.matches) : reviews;
+  const counts = { all: base.length };
+  const sites = [];
+  base.forEach((r) => {
+    const s = A.sentOf(r); counts[s] = (counts[s] || 0) + 1;
+    counts["s:" + r.site] = (counts["s:" + r.site] || 0) + 1;
+    if (sites.indexOf(r.site) < 0) sites.push(r.site);
+  });
+
+  $("sent-chips").innerHTML = [["all", "All"], ["positive", "Positive"], ["mixed", "Mixed"], ["negative", "Negative"]]
+    .filter(([k]) => k === "all" || counts[k])
+    .map(([k, label]) => '<button type="button" class="chip" data-sent="' + k + '" aria-pressed="' + (S.sent === k) + '">' + label + " (" + (counts[k] || 0) + ")</button>").join("");
+  $("store-chips").innerHTML = '<button type="button" class="chip" data-store="all" aria-pressed="' + (S.store === "all") + '">All stores (' + counts.all + ")</button>" +
+    sites.map((s) => '<button type="button" class="chip" data-store="' + esc(s) + '" aria-pressed="' + (S.store === s) + '">' + esc(s) + " (" + counts["s:" + s] + ")</button>").join("");
+
+  const list = base.filter((r) => (S.sent === "all" || A.sentOf(r) === S.sent) && (S.store === "all" || r.site === S.store))
+    .slice().sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+  $("all-count").textContent = (A.asked && A.topics.length ? list.length + " reviews match your question" : plural(list.length, "review")) + (list.length > 2 ? ", newest first. Scroll for more." : ", newest first.");
+  $("all-strip").innerHTML = list.length ? list.map((r) => reviewCard(r, A.themes)).join("") : '<p class="empty">No reviews match these filters.</p>';
+  $("all-strip").scrollLeft = 0;
+}
+
+/* ---------------- Side panel ---------------- */
+
+function openPanel(key, group) {
+  const p = D.panels && D.panels[key];
+  if (!p) return;
+  let g = Number(group);
+  if (group === "neg") { const i = p.groups.findIndex((x) => x.label === "Negative"); g = i >= 0 ? i : 0; }
+  S.panel = key; S.group = isNaN(g) ? 0 : Math.min(g, p.groups.length - 1);
+  lastFocus = document.activeElement;
+  renderPanel();
+  $("overlay").hidden = false;
+  document.body.style.overflow = "hidden";
+  $("panel-close").focus();
+}
+
+function renderPanel() {
+  const p = D.panels[S.panel];
+  const total = p.groups.reduce((n, g) => n + g.ids.length, 0);
+  const N = (D.reviews || []).length;
+  const g = p.groups[S.group];
+  const byId = {}; D.reviews.forEach((r) => { byId[r.id] = r; });
+  $("panel-title").textContent = p.title;
+  $("panel-sub").textContent = S.panel.indexOf("d_") === 0 ? total + " reviews discuss it" : S.panel.indexOf("h_") === 0 ? "Reported in " + total + " of " + N + " reviews" : "Mentioned in " + total + " of " + N + " reviews";
+  $("panel-chips").innerHTML = p.groups.map((grp, i) => '<button type="button" class="chip" data-group-pick="' + i + '" aria-pressed="' + (i === S.group) + '">' + esc(grp.label) + " (" + grp.ids.length + ")</button>").join("");
+  $("panel-count").textContent = plural(g.ids.length, "review") + (g.ids.length > 2 ? ", scroll for more" : "");
+  $("panel-strip").innerHTML = g.ids.map((id) => byId[id] ? reviewCard(byId[id], [p.theme]) : "").join("");
+  $("panel-strip").scrollLeft = 0;
+}
+
+function closePanel() {
+  if ($("overlay").hidden) return;
+  $("overlay").hidden = true;
+  document.body.style.overflow = "";
+  S.panel = null;
+  if (lastFocus) lastFocus.focus();
+}
+
+/* ---------------- Clicks, keys and scrolling ---------------- */
+
+document.addEventListener("click", (e) => {
+  const t = e.target.closest("button");
+  if (!t || !D) return;
+  if (t.dataset.acc) {
+    S.acc = S.acc === t.dataset.acc ? null : t.dataset.acc;
+    renderAccordions();
+    const again = document.querySelector('[data-acc="' + t.dataset.acc + '"]');
+    if (again) again.focus();
+  } else if (t.id === "concerns-more") {
+    S.more = !S.more; renderAccordions();
+  } else if (t.dataset.open) {
+    openPanel(t.dataset.open, t.dataset.group);
+  } else if (t.dataset.groupPick) {
+    S.group = +t.dataset.groupPick; renderPanel();
+  } else if (t.hasAttribute("data-close")) {
+    closePanel();
+  } else if (t.dataset.suggest) {
+    $("ask").value = t.dataset.suggest; S.asked = t.dataset.suggest; S.sent = "all"; S.store = "all"; renderAllReviews();
+  } else if (t.hasAttribute("data-clear")) {
+    $("ask").value = ""; S.asked = ""; renderAllReviews(); $("ask").focus();
+  } else if (t.dataset.sent) {
+    S.sent = t.dataset.sent; renderAllReviews();
+  } else if (t.dataset.store) {
+    S.store = t.dataset.store; renderAllReviews();
+  } else if (t.dataset.scroll) {
+    $(t.dataset.scroll).scrollBy({ left: 336 * Number(t.dataset.dir), behavior: "smooth" });
+  }
+});
+
+$("ask-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  S.asked = $("ask").value; S.sent = "all"; S.store = "all";
+  renderAllReviews();
+});
+
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closePanel(); });
+
+function updateSticky() {
+  const onResults = !$("results-screen").hidden && !$("content").hidden;
+  const product = $("product");
+  const show = onResults && product.getBoundingClientRect().bottom < 0;
+  $("sticky").classList.toggle("show", show);
+  $("sticky").setAttribute("aria-hidden", String(!show));
+  $("sticky").querySelectorAll("a, input, button").forEach((el) => { el.tabIndex = show ? 0 : -1; });
+}
+window.addEventListener("scroll", updateSticky, { passive: true });
+
+/* ---------------- Start ---------------- */
+const startQ = new URLSearchParams(location.search).get("q");
+if (startQ) search(startQ, false); else showScreen("search");
+</script>
+</body>
+</html>
