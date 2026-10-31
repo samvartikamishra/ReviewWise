@@ -412,8 +412,7 @@ function finish(q, info, ins, reviews, byId, panels, themes, tags, suspicious, o
         { value: dates.length ? shortDate(dates[0]) + " – " + shortDate(dates[dates.length - 1]) : "Not dated", label: "review dates" }
       ],
       note: (reviews.length + removed) + " reviews from Indian sources collected by AI search." +
-        (removed ? " Removed " + [suspicious && suspicious + " suspicious", offTopic && offTopic + " off-topic"].filter(Boolean).join(" and ") + (removed === 1 ? " review." : " reviews.") : "") +
-        " Counts are calculated from the reviews shown below."
+        (removed ? " Removed " + [suspicious && suspicious + " suspicious", offTopic && offTopic + " off-topic"].filter(Boolean).join(" and ") + (removed === 1 ? " review." : " reviews.") : "")
     },
     likes, concerns, concernsShown: 5,
     disagreements,
