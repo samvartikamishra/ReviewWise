@@ -218,6 +218,7 @@
   .rv { flex: 1; min-width: 0; padding: 16px; display: flex; flex-direction: column; gap: 8px; }
   .rv .row { display: flex; align-items: center; gap: 8px; }
   .rv .rec { margin-left: auto; font-size: 11.5px; color: var(--muted); }
+  .rv .ai-note { margin: 0; font-size: 11.5px; font-weight: 600; color: var(--muted); }
   .rv .txt { margin: 0; font-size: 14px; line-height: 1.55; color: var(--ink); }
   .rv mark { background: var(--mark); color: var(--navy); font-weight: 600; padding: 0 2px; border-radius: 3px; }
   .rv .src { margin-top: auto; padding-top: 6px; font-size: 12.5px; font-weight: 600; color: var(--navy); text-underline-offset: 3px; }
@@ -707,7 +708,7 @@ function reviewCard(r, themes) {
   const k = Math.round(r.rating || 0);
   const phrases = [];
   (themes || []).forEach((t) => ((r.hl && r.hl[t]) || []).forEach((x) => { if (phrases.indexOf(x) < 0) phrases.push(x); }));
-  const body = '<p class="txt">' + highlight(r.text || "", phrases) + "</p>";
+  const body = (r.summarised ? '<p class="ai-note">AI summary of this review, not the owner’s exact words</p>' : "") + '<p class="txt">' + highlight(r.text || "", phrases) + "</p>";
   const link = r.url ? '<a class="src" href="' + esc(r.url) + '" target="_blank" rel="noopener">View on ' + esc(r.site) + " ↗</a>" : '<span class="nolink">No link to the original</span>';
   const rec = '<span class="rec">Record ' + esc(r.id) + "</span>";
   const look = lookFor(r.site);
