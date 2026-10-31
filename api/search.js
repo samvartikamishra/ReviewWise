@@ -1,11 +1,13 @@
 // ReviewWise AI backend: GET /api/search?q=<product name or link>
 //
+// India-focused: Indian stores, India warranty terms, products sold in India.
 // The work is split into four Gemini tasks:
 //   Task 1  Identify the product: official listing, warranty, close competitors (Gemini + Google Search)
-//   Task 2  Collect buyer reviews from public pages, with source links          (Gemini + Google Search)
+//   Task 2  Collect buyer reviews from public pages, with source links          (Gemini + Google Search + page reading)
+//           Runs as 4 searches at once, each aimed at a different kind of source, then merged.
 //   Task 3  Tag each review: sentiment, themes, exact sentences, usage situation (Gemini, structured JSON)
 //   Task 4  Write the insights: headline, explanations, disagreements           (Gemini, structured JSON)
-// Tasks 1 and 2 run at the same time. All counts and percentages are calculated here in code,
+// Task 1 and the four Task 2 searches all run at the same time. All counts and percentages are calculated here in code,
 // not by the AI, because language models are unreliable at counting.
 //
 // Needs one environment variable in Vercel: GEMINI_API_KEY
@@ -17,16 +19,18 @@ const SAMPLE = require("./_sample.json");
 
 const MODEL = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
 const API = "https://generativelanguage.googleapis.com/v1beta/models/";
-const MAX_REVIEWS = 40;
+const MAX_REVIEWS = 60;   // after merging all Task 2 searches
+const PER_SEARCH = 20;    // asked of each Task 2 search
 const cache = new Map(); // repeat searches reuse results while this server copy stays warm
 
 /* ------------------------------------------------------------------ */
 /* Talking to Gemini                                                   */
 /* ------------------------------------------------------------------ */
 
-async function gemini({ prompt, search = false, schema = null }) {
+async function gemini({ prompt, search = false, readPages = false, schema = null }) {
   const body = { contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: {} };
   if (search) body.tools = [{ google_search: {} }];
+  if (search && readPages) body.tools.push({ url_context: {} }); // lets Gemini open the pages it finds
   if (schema) {
     body.generationConfig.responseMimeType = "application/json";
     body.generationConfig.responseJsonSchema = schema;
@@ -43,6 +47,9 @@ async function gemini({ prompt, search = false, schema = null }) {
     await new Promise((r) => setTimeout(r, 1500 * (attempt + 1))); // busy or rate-limited: wait, then retry
   }
   const data = await res.json().catch(() => ({}));
+  if (!res.ok && readPages && res.status === 400) {
+    return gemini({ prompt, search, readPages: false, schema }); // page reading not available: search only
+  }
   if (!res.ok) {
     const msg = (data.error && data.error.message) || "Gemini request failed";
     const err = new Error(
@@ -56,6 +63,10 @@ async function gemini({ prompt, search = false, schema = null }) {
   const text = ((cand.content && cand.content.parts) || []).filter((p) => !p.thought).map((p) => p.text || "").join("");
   const sources = ((cand.groundingMetadata && cand.groundingMetadata.groundingChunks) || [])
     .map((c) => c.web).filter(Boolean).map((w) => ({ uri: w.uri, title: (w.title || "").toLowerCase() }));
+  // Pages Gemini opened and read successfully also count as confirmed sources
+  ((cand.urlContextMetadata && cand.urlContextMetadata.urlMetadata) || []).forEach((m) => {
+    if (m.retrievedUrl && /SUCCESS/i.test(m.urlRetrievalStatus || "")) sources.push({ uri: m.retrievedUrl, title: hostOf(m.retrievedUrl) });
+  });
   return { text, sources };
 }
 
@@ -108,18 +119,18 @@ const confirmedLink = (url, sources) => sourceFor(url, "", sources);
 /* ------------------------------------------------------------------ */
 
 function task1Prompt(q) {
-  return `You are researching a product for a shopper in the USA. The shopper searched for: "${q}".
-Use Google Search. Identify the exact product, then find its official product page, its manufacturer warranty, and 3 close competitors.
+  return `You are researching a product for a shopper in India. The shopper searched for: "${q}".
+Use Google Search. Identify the exact product as sold in India, then find its official product page on the manufacturer's Indian website (for example sony.co.in, samsung.com/in or lg.com/in), the manufacturer warranty offered in India, and 3 close competitors that are sold in India.
 Reply with only this JSON object, no other text:
 {
  "found": true or false,
  "brand": "manufacturer name",
  "name": "model name without the brand",
  "category": "short category, e.g. OLED TV",
- "description": "one short line, e.g. 65-inch 4K OLED TV, 2025 model",
- "officialUrl": "URL of the official product page on the manufacturer's site, or empty",
- "warranty": { "summary": "e.g. 1-year limited warranty", "covered": ["..."], "notCovered": ["..."], "sourceUrl": "URL" },
- "competitors": [ { "brand": "", "name": "", "model": "size and model number", "tags": ["year", "panel type", "one key feature"], "url": "official page URL" } ]
+ "description": "one short line, e.g. 65-inch 4K OLED TV, 2025 model, Indian model number if different",
+ "officialUrl": "URL of the official product page on the manufacturer's Indian site, or empty",
+ "warranty": { "summary": "warranty in India, e.g. 1-year comprehensive warranty, plus any extra panel warranty", "covered": ["..."], "notCovered": ["..."], "sourceUrl": "URL" },
+ "competitors": [ { "brand": "", "name": "", "model": "size and Indian model number", "tags": ["year", "panel type", "one key feature"], "url": "official Indian page URL" } ]
 }
 Only include facts you found in search results. Use empty strings or empty lists when unsure.`;
 }
@@ -128,15 +139,25 @@ Only include facts you found in search results. Use empty strings or empty lists
 /* Task 2: collect reviews                                             */
 /* ------------------------------------------------------------------ */
 
-function task2Prompt(q) {
-  return `Find real buyer and owner reviews of this product: "${q}".
-Use Google Search. Look at retailer reviews (Amazon, Best Buy, Walmart, Target), the manufacturer's own site, Reddit owner discussions, and Google reviews.
-Collect up to ${MAX_REVIEWS} separate reviews written by owners, not by professional reviewers or the shop.
-For each review, copy a short excerpt (up to about 60 words) exactly as the owner wrote it, choosing the part that says the most about their experience. Never write, combine or paraphrase a review. If you can't see the owner's exact words in your search results, leave that review out.
+// Each Task 2 search looks at a different kind of source, so together they cover more ground.
+const REVIEW_SEARCHES = [
+  "Amazon India (amazon.in) customer reviews",
+  "Flipkart (flipkart.com) customer reviews and ratings",
+  "reviews on other Indian retailers such as Croma, Reliance Digital, Vijay Sales and Tata CLiQ, and on the brand's Indian website",
+  "Reddit threads and Indian forums where owners in India describe their experience, including delivery, installation, after-sales service and long-term use"
+];
+
+function task2Prompt(q, focus) {
+  return `Find real reviews by buyers in India of this product: "${q}".
+Focus on: ${focus}.
+Only include reviews from India. Skip reviews that are clearly from buyers in other countries.
+Use Google Search, then open the most useful pages you find and read the reviews on them.
+Collect up to ${PER_SEARCH} separate reviews written by owners, not by professional reviewers or the shop.
+For each review, copy a short excerpt (up to about 60 words) exactly as the owner wrote it, choosing the part that says the most about their experience. Never write, combine or paraphrase a review. If you can't see the owner's exact words, leave that review out.
 Reply with only this JSON object, no other text:
 {
  "reviews": [
-  { "site": "store or website name, e.g. Amazon", "url": "page where the review appears", "rating": 1-5 or 0 if not given, "date": "YYYY-MM-DD or empty", "verified": true or false, "text": "the review's exact words" }
+  { "site": "store or website name, e.g. Amazon", "url": "page where the review appears", "rating": 1-5 or 0 if not given, "date": "YYYY-MM-DD, or YYYY-MM if only the month is shown, or empty", "verified": true if marked Verified Purchase (Amazon) or Certified Buyer (Flipkart), "text": "the owner's exact words" }
  ]
 }`;
 }
@@ -209,7 +230,7 @@ const INSIGHT_SCHEMA = {
     situationNotes: { type: "array", items: { type: "object", properties: {
       label: { type: "string" }, note: { type: "string", description: "what owners in this situation report, or empty" }
     }, required: ["label", "note"] } },
-    suggestions: { type: "array", items: { type: "string" }, description: "4 short first-person situations a shopper might ask about, e.g. I have a bright living room" }
+    suggestions: { type: "array", items: { type: "string" }, description: "4 short first-person situations a shopper in India might ask about, based on what reviewers discuss, e.g. I have a bright living room, or My area has frequent power cuts" }
   },
   required: ["headline", "themes", "disagreements", "situationNotes", "suggestions"]
 };
@@ -221,7 +242,7 @@ function task4Prompt(product, themes, panels, reviews, situations) {
     const evidence = p.groups.map((g) => g.label + ": " + g.ids.join(" ")).join("; ");
     return "- " + t.id + " (" + t.title + "): " + counts + ". Reviews: " + evidence;
   }).join("\n");
-  return `You are writing a neutral summary of buyer reviews of ${product}. Don't tell the reader whether to buy it.
+  return `You are writing a neutral summary of reviews by buyers in India of ${product}. Don't tell the reader whether to buy it.
 Themes, with how many reviews were positive, mixed or negative (already counted, don't recount):
 ${lines}
 Situations: ${situations.map((s) => s.label).join(", ")}
@@ -235,7 +256,7 @@ Write short, plain sentences. Only say what the reviews support, and cite review
 /* ------------------------------------------------------------------ */
 
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const shortDate = (d) => { const p = d.split("-"); return MONTHS[+p[1] - 1] + " " + (+p[2]) + ", " + p[0]; };
+const shortDate = (d) => { const p = d.split("-"); return p[2] ? MONTHS[+p[1] - 1] + " " + (+p[2]) + ", " + p[0] : MONTHS[+p[1] - 1] + " " + p[0]; };
 const slug = (s) => String(s || "").toLowerCase().replace(/[^a-z]/g, "").slice(0, 24);
 const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const avg = (ids, byId) => { const r = ids.map((id) => byId[id].rating).filter((x) => x > 0); return r.length ? (r.reduce((a, b) => a + b, 0) / r.length).toFixed(1) : "n/a"; };
@@ -336,7 +357,7 @@ function finish(q, info, ins, reviews, byId, panels, themes, tags, suspicious, o
   // Summary numbers
   const perSite = {};
   reviews.forEach((r) => { perSite[r.site] = (perSite[r.site] || 0) + 1; });
-  const dates = reviews.map((r) => r.date).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort();
+  const dates = reviews.map((r) => r.date).filter((d) => /^\d{4}-\d{2}(-\d{2})?$/.test(d)).sort();
   const removed = suspicious + offTopic;
 
   const brand = info.brand || "";
@@ -360,7 +381,7 @@ function finish(q, info, ins, reviews, byId, panels, themes, tags, suspicious, o
         { value: Object.keys(perSite).length + (Object.keys(perSite).length === 1 ? " source" : " sources"), label: Object.keys(perSite).map((s) => s + " " + perSite[s]).join(" · ") },
         { value: dates.length ? shortDate(dates[0]) + " – " + shortDate(dates[dates.length - 1]) : "Not dated", label: "review dates" }
       ],
-      note: (reviews.length + removed) + " reviews collected by AI search." +
+      note: (reviews.length + removed) + " reviews from Indian sources collected by AI search." +
         (removed ? " Removed " + [suspicious && suspicious + " suspicious", offTopic && offTopic + " off-topic"].filter(Boolean).join(" and ") + (removed === 1 ? " review." : " reviews.") : "") +
         " Counts are calculated from the reviews shown below."
     },
@@ -402,17 +423,31 @@ module.exports = async (req, res) => {
   if (cache.has(key)) return res.status(200).json(cache.get(key));
 
   try {
-    // Tasks 1 and 2 at the same time
-    const [t1, t2] = await Promise.all([
+    // Task 1 and the four Task 2 searches at the same time
+    const [t1, ...t2s] = await Promise.all([
       step("Task 1 (identifying the product)", () => gemini({ prompt: task1Prompt(q), search: true })),
-      step("Task 2 (collecting reviews)", () => gemini({ prompt: task2Prompt(q), search: true }))
+      ...REVIEW_SEARCHES.map((focus) => gemini({ prompt: task2Prompt(q, focus), search: true, readPages: true }).catch((err) => ({ failed: err })))
     ]);
     const info = await step("Task 1 (reading the product details)", async () => readJson(t1.text));
     if (info.found === false) return res.status(404).json({ error: "Couldn’t find that product. Try the brand and model number." });
 
-    // Keep reviews whose website was really in the search results
-    const sources = t2.sources.concat(t1.sources);
-    const found = await step("Task 2 (reading the reviews)", async () => readJson(t2.text).reviews || []);
+    // Merge the Task 2 searches; one failing is fine as long as another worked
+    const worked = t2s.filter((t) => !t.failed);
+    if (!worked.length) throw new Error("Task 2 (collecting reviews) failed: " + (t2s[0].failed.message || "all review searches failed"));
+    const sources = [].concat(...worked.map((t) => t.sources), t1.sources);
+    const seen = new Set();
+    const found = [];
+    worked.forEach((t) => {
+      let list = [];
+      try { list = readJson(t.text).reviews || []; } catch (e) { return; } // skip a search whose answer can't be read
+      list.forEach((r) => {
+        if (!r || typeof r.text !== "string") return;
+        const key = r.text.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 80);
+        if (key.length < 20 || seen.has(key)) return; // drop duplicates found by two searches
+        seen.add(key);
+        found.push(r);
+      });
+    });
     const usable = found.filter((r) => r && typeof r.text === "string" && r.text.trim().length > 20);
     const raw = usable
       .map((r) => Object.assign({}, r, { url: sources.length ? sourceFor(r.url, r.site, sources) : null }))
@@ -421,7 +456,7 @@ module.exports = async (req, res) => {
       .map((r, i) => ({
         id: "R" + (i + 1), site: String(r.site || hostOf(r.url) || "Web").trim(), url: r.url,
         rating: Math.max(0, Math.min(5, Math.round(Number(r.rating) || 0))),
-        date: /^\d{4}-\d{2}-\d{2}$/.test(r.date || "") ? r.date : "", verified: r.verified === true, text: r.text.trim()
+        date: /^\d{4}-\d{2}(-\d{2})?$/.test(r.date || "") ? r.date : "", verified: r.verified === true, text: r.text.trim()
       }));
     if (raw.length < 3) {
       return res.status(404).json({ error: "Only " + raw.length + " usable reviews were found (Gemini returned " + found.length + ", from " + sources.length + " search sources). Try a more specific or more popular product." });
@@ -432,7 +467,7 @@ module.exports = async (req, res) => {
     // Task 3
     const t3 = await step("Task 3 (tagging reviews)", () => gemini({ prompt: task3Prompt(productName, raw), schema: TAG_SCHEMA }));
     const tags = await step("Task 3 (reading the tags)", async () => readJson(t3.text));
-    const b = await step("Task 3 (counting)", async () => build(q, info, t1.sources, raw, t2.sources, tags));
+    const b = await step("Task 3 (counting)", async () => build(q, info, t1.sources, raw, sources, tags));
 
     // Task 4
     const t4 = await step("Task 4 (writing insights)", () => gemini({ prompt: task4Prompt(productName, b.themes, b.panels, b.reviews, tags.situations || []), schema: INSIGHT_SCHEMA }));
