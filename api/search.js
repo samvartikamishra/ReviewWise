@@ -5,7 +5,7 @@
 //   Task 1  Identify the product: official listing, warranty, close competitors (Gemini + Google Search)
 //   Task 2  Collect buyer reviews from public pages, with source links          (Gemini + Google Search)
 //           Runs as 4 searches at once, each aimed at a different kind of source, then merged.
-//   Task 3  Tag each review: sentiment, themes, exact sentences, usage situation (Gemini, structured JSON)
+//   Task 3  Pick the topics, then tag reviews in batches of 30 at once          (Gemini, structured JSON)
 //   Task 4  Write the insights: headline, explanations, disagreements           (Gemini, structured JSON)
 // Task 1 and the four Task 2 searches all run at the same time. All counts and percentages are calculated here in code,
 // not by the AI, because language models are unreliable at counting.
@@ -25,7 +25,8 @@ const { flipkartReviews, amazonReviews, amazonLink, flipkartLink } = require("./
 
 const MODEL = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
 const API = "https://generativelanguage.googleapis.com/v1beta/models/";
-const MAX_REVIEWS = 80;   // after merging every source
+const MAX_REVIEWS = 120;  // after merging every source
+const TAG_BATCH = 30;     // reviews tagged per Gemini call in Task 3
 const PER_SEARCH = 20;    // asked of each Task 2 search
 const cache = new Map(); // repeat searches reuse results while this server copy stays warm
 
@@ -182,8 +183,10 @@ Only include facts and links you found in search results; never make up a link. 
 const REVIEW_SEARCHES = [
   { label: "Amazon", focus: "Amazon India (amazon.in) customer reviews", queries: (q) => [`"${q}" reviews site:amazon.in`, `${q} amazon.in customer review`] },
   { label: "Flipkart", focus: "Flipkart (flipkart.com) customer reviews and ratings", queries: (q) => [`"${q}" reviews site:flipkart.com`, `${q} flipkart ratings and reviews`] },
-  { label: "Other stores", focus: "reviews on other Indian retailers such as Croma, Reliance Digital, Vijay Sales and Tata CLiQ, and on the brand's Indian website", queries: (q) => [`${q} reviews croma`, `${q} reviews reliance digital`, `${q} customer reviews India`] },
-  { label: "Forums", focus: "Reddit threads and Indian forums where owners in India describe their experience, including delivery, installation, after-sales service and long-term use", queries: (q) => [`${q} reddit india owner experience`, `${q} review after months india`] }
+  { label: "Croma and Reliance Digital", focus: "customer reviews on Croma (croma.com) and Reliance Digital (reliancedigital.in)", queries: (q) => [`${q} reviews site:croma.com`, `${q} reviews site:reliancedigital.in`] },
+  { label: "Other stores", focus: "customer reviews on Vijay Sales, Tata CLiQ, JioMart and the brand's Indian website", queries: (q) => [`${q} customer reviews vijay sales`, `${q} reviews tata cliq`, `${q} reviews ratings india`] },
+  { label: "Indian tech sites", focus: "user reviews and owner comments on Indian tech sites such as 91mobiles, Smartprix, MySmartPrice and Gadgets 360 (user reviews only, not the editors' reviews)", queries: (q) => [`${q} user reviews 91mobiles`, `${q} user reviews smartprix`, `${q} owner review india`] },
+  { label: "Forums", focus: "Reddit threads, Quora answers and Indian forums where owners in India describe their experience, including delivery, installation, after-sales service and long-term use", queries: (q) => [`${q} reddit india owner experience`, `${q} quora experience`, `${q} review after months india`] }
 ];
 const BROAD_SEARCH = { label: "Any Indian site", focus: "owner reviews from buyers in India on any website", queries: (q) => [`${q} review india`, `${q} owner review`, `${q} user reviews`] };
 
@@ -236,7 +239,8 @@ async function collectReviews(q, search) {
 /* Task 3: tag every review                                            */
 /* ------------------------------------------------------------------ */
 
-const TAG_SCHEMA = {
+// Step 1: pick the topics (themes) and situations from all the reviews
+const THEME_SCHEMA = {
   type: "object",
   properties: {
     themes: { type: "array", description: "5 to 12 aspects buyers talk about", items: { type: "object", properties: {
@@ -247,30 +251,67 @@ const TAG_SCHEMA = {
     situations: { type: "array", description: "2 to 6 ways people use the product, e.g. Bright rooms, Gaming", items: { type: "object", properties: {
       label: { type: "string" },
       keywords: { type: "array", items: { type: "string" } }
-    }, required: ["label", "keywords"] } },
-    reviews: { type: "array", items: { type: "object", properties: {
-      id: { type: "string" },
-      sentiment: { type: "string", enum: ["positive", "mixed", "negative"] },
-      offTopic: { type: "boolean", description: "true if it isn't about owning this product" },
-      suspicious: { type: "boolean", description: "true if it reads like an ad, a fake, or a paid review" },
-      situations: { type: "array", items: { type: "string" } },
-      mentions: { type: "array", items: { type: "object", properties: {
-        theme: { type: "string" },
-        stance: { type: "string", enum: ["positive", "mixed", "negative"] },
-        sentences: { type: "array", items: { type: "string" }, description: "sentences copied exactly from the review" },
-        later: { type: "boolean", description: "true if the review says this appeared after months of use or after an update" }
-      }, required: ["theme", "stance", "sentences", "later"] } }
-    }, required: ["id", "sentiment", "offTopic", "suspicious", "situations", "mentions"] } }
+    }, required: ["label", "keywords"] } }
   },
-  required: ["themes", "situations", "reviews"]
+  required: ["themes", "situations"]
 };
 
-function task3Prompt(product, reviews) {
-  return `These are buyer reviews of ${product}. Tag every review.
-Pick the themes buyers actually discuss. For each review, list the themes it mentions, its stance on each, and copy the exact sentences that mention the theme, character for character.
-Mark reviews that are off-topic or look fake. Situations describe how the reviewer uses the product.
+function themePrompt(product, reviews) {
+  return `These are buyer reviews of ${product}. Read them all and pick the 5 to 12 themes buyers actually discuss most, and 2 to 6 situations describing how reviewers use the product. Don't tag individual reviews yet.
 Reviews:
-${reviews.map((r) => r.id + " [" + r.site + ", " + (r.rating || "no") + " stars]: " + r.text).join("\n")}`;
+${reviews.map((r) => r.id + " [" + r.site + "]: " + r.text).join("\n")}`;
+}
+
+// Step 2: tag one batch of reviews against that fixed list, so every batch uses the same topics
+function tagSchema(themeIds, situationLabels) {
+  return {
+    type: "object",
+    properties: {
+      reviews: { type: "array", items: { type: "object", properties: {
+        id: { type: "string" },
+        sentiment: { type: "string", enum: ["positive", "mixed", "negative"] },
+        offTopic: { type: "boolean", description: "true if it isn't about owning or using this product, e.g. a question or a comment about the video" },
+        suspicious: { type: "boolean", description: "true if it reads like an ad, a fake, or a paid review" },
+        situations: { type: "array", items: { type: "string", enum: situationLabels.length ? situationLabels : ["none"] } },
+        mentions: { type: "array", items: { type: "object", properties: {
+          theme: { type: "string", enum: themeIds },
+          stance: { type: "string", enum: ["positive", "mixed", "negative"] },
+          sentences: { type: "array", items: { type: "string" }, description: "sentences copied exactly from the review" },
+          later: { type: "boolean", description: "true if the review says this appeared after months of use or after an update" }
+        }, required: ["theme", "stance", "sentences", "later"] } }
+      }, required: ["id", "sentiment", "offTopic", "suspicious", "situations", "mentions"] } }
+    },
+    required: ["reviews"]
+  };
+}
+
+function tagPrompt(product, themes, situations, batch) {
+  return `These are buyer reviews of ${product}. Tag every review in this list.
+Themes (use these ids only): ${themes.map((t) => t.id + " = " + t.title).join("; ")}
+Situations (use these labels only): ${situations.map((x) => x.label).join("; ") || "none"}
+For each review, list the themes it mentions, its stance on each, and copy the exact sentences that mention the theme, character for character.
+Mark reviews that are off-topic or look fake. A review can mention no themes.
+Reviews:
+${batch.map((r) => r.id + " [" + r.site + ", " + (r.rating || "no") + " stars]: " + r.text).join("\n")}`;
+}
+
+// Runs both steps: topics first, then all batches at the same time
+async function tagReviews(product, reviews) {
+  const t = await step("Task 3 (picking topics)", () => gemini({ prompt: themePrompt(product, reviews), schema: THEME_SCHEMA }));
+  const picked = await step("Task 3 (reading the topics)", async () => readJson(t.text));
+  const themes = (picked.themes || []).map((x) => Object.assign({}, x, { id: slug(x.id) })).filter((x) => x.id);
+  const situations = picked.situations || [];
+  if (!themes.length) throw new Error("Task 3 (picking topics) failed: no topics were found in the reviews");
+  const schema = tagSchema(themes.map((x) => x.id), situations.map((x) => x.label));
+
+  const batches = [];
+  for (let i = 0; i < reviews.length; i += TAG_BATCH) batches.push(reviews.slice(i, i + TAG_BATCH));
+  const tagged = await Promise.all(batches.map((batch, n) =>
+    step("Task 3 (tagging batch " + (n + 1) + " of " + batches.length + ")", async () =>
+      readJson((await gemini({ prompt: tagPrompt(product, themes, situations, batch), schema })).text).reviews || [])
+      .catch(() => []) // one failed batch only loses its own tags; those reviews are left out
+  ));
+  return { themes, situations, reviews: [].concat(...tagged) };
 }
 
 /* ------------------------------------------------------------------ */
@@ -545,8 +586,7 @@ module.exports = async (req, res) => {
     const productName = [info.brand, info.name].filter(Boolean).join(" ") || q;
 
     // Task 3
-    const t3 = await step("Task 3 (tagging reviews)", () => gemini({ prompt: task3Prompt(productName, raw), schema: TAG_SCHEMA }));
-    const tags = await step("Task 3 (reading the tags)", async () => readJson(t3.text));
+    const tags = await tagReviews(productName, raw);
     const b = await step("Task 3 (counting)", async () => build(q, info, t1.sources, raw, sources, tags));
 
     // Task 4
