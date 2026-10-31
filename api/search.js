@@ -67,7 +67,7 @@ async function gemini({ prompt, search = false, readPages = false, schema = null
   ((cand.urlContextMetadata && cand.urlContextMetadata.urlMetadata) || []).forEach((m) => {
     if (m.retrievedUrl && /SUCCESS/i.test(m.urlRetrievalStatus || "")) sources.push({ uri: m.retrievedUrl, title: hostOf(m.retrievedUrl) });
   });
-  return { text, sources };
+  return { text, sources, finishReason: cand.finishReason || (data.promptFeedback && data.promptFeedback.blockReason) || "" };
 }
 
 // Search-grounded answers can't be forced into a schema, so read the JSON out of the text.
@@ -147,19 +147,49 @@ const REVIEW_SEARCHES = [
   "Reddit threads and Indian forums where owners in India describe their experience, including delivery, installation, after-sales service and long-term use"
 ];
 
-function task2Prompt(q, focus) {
+function task2Prompt(q, focus, summarise) {
+  const how = summarise
+    ? `For each review, write a one or two sentence summary in your own words of what the owner reported, in the third person (for example: "The owner says the picture is sharp but the speakers are weak."). Don't quote them.`
+    : `For each review, copy one or two short sentences (under 25 words) exactly as the owner wrote them, choosing the part that says the most about their experience. Never write, combine or paraphrase a review. If you can't see the owner's exact words, leave that review out.`;
   return `Find real reviews by buyers in India of this product: "${q}".
 Focus on: ${focus}.
 Only include reviews from India. Skip reviews that are clearly from buyers in other countries.
 Use Google Search, then open the most useful pages you find and read the reviews on them.
 Collect up to ${PER_SEARCH} separate reviews written by owners, not by professional reviewers or the shop.
-For each review, copy a short excerpt (up to about 60 words) exactly as the owner wrote it, choosing the part that says the most about their experience. Never write, combine or paraphrase a review. If you can't see the owner's exact words, leave that review out.
+${how}
 Reply with only this JSON object, no other text:
 {
  "reviews": [
-  { "site": "store or website name, e.g. Amazon", "url": "page where the review appears", "rating": 1-5 or 0 if not given, "date": "YYYY-MM-DD, or YYYY-MM if only the month is shown, or empty", "verified": true if marked Verified Purchase (Amazon) or Certified Buyer (Flipkart), "text": "the owner's exact words" }
+  { "site": "store or website name, e.g. Amazon", "url": "page where the review appears", "rating": 1-5 or 0 if not given, "date": "YYYY-MM-DD, or YYYY-MM if only the month is shown, or empty", "verified": true if marked Verified Purchase (Amazon) or Certified Buyer (Flipkart), "text": "${summarise ? "your summary of the review" : "the owner's exact words"}" }
  ]
 }`;
+}
+
+// One Task 2 search. If Google's copyright filter blocks exact quotes, or nothing usable comes back,
+// it retries once asking for short summaries, which the page labels as AI summaries.
+async function collectReviews(q, focus) {
+  const label = focus.split(/[ (,]/)[0] + (focus.startsWith("reviews on other") ? " other stores" : "");
+  const attempt = async (summarise) => {
+    const r = await gemini({ prompt: task2Prompt(q, focus, summarise), search: true, readPages: true });
+    let reviews = [], problem = "";
+    if (!r.text) problem = "empty answer" + (r.finishReason ? " (" + r.finishReason + ")" : "");
+    else { try { reviews = readJson(r.text).reviews || []; } catch (e) { problem = "answer wasn't readable" + (r.finishReason && r.finishReason !== "STOP" ? " (" + r.finishReason + ")" : ""); } }
+    if (!problem && !reviews.length) problem = "no reviews found";
+    reviews.forEach((x) => { if (x) x.summarised = summarise; });
+    return { reviews, sources: r.sources, problem };
+  };
+  try {
+    let r = await attempt(false);
+    if (!r.reviews.length) {
+      const again = await attempt(true);
+      again.problem = again.reviews.length ? "" : r.problem + "; retry with summaries: " + again.problem;
+      again.sources = again.sources.concat(r.sources);
+      r = again;
+    }
+    return Object.assign({ label }, r);
+  } catch (err) {
+    return { label, reviews: [], sources: [], problem: err.message || "failed" };
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -396,7 +426,7 @@ function finish(q, info, ins, reviews, byId, panels, themes, tags, suspicious, o
       return { brand: (c.brand || "").toUpperCase(), name: c.name, model: c.model || "", tags: c.tags || [], url, site: url ? hostOf(url) : "" };
     }),
     competitorsNote: "Their reviews haven’t been analyzed here, so no ratings or claims are shown for them.",
-    reviews: reviews.map((r) => ({ id: r.id, site: r.site, date: r.date, rating: r.rating, verified: r.verified, url: r.url, sentiment: r.sentiment, text: r.text, contexts: r.contexts, hl: r.hl })),
+    reviews: reviews.map((r) => ({ id: r.id, site: r.site, date: r.date, rating: r.rating, verified: r.verified, url: r.url, sentiment: r.sentiment, summarised: r.summarised, text: r.text, contexts: r.contexts, hl: r.hl })),
     panels,
     ask: { suggestions: (ins.suggestions || []).slice(0, 4), topics, themePanels: {} }
   };
@@ -426,28 +456,23 @@ module.exports = async (req, res) => {
     // Task 1 and the four Task 2 searches at the same time
     const [t1, ...t2s] = await Promise.all([
       step("Task 1 (identifying the product)", () => gemini({ prompt: task1Prompt(q), search: true })),
-      ...REVIEW_SEARCHES.map((focus) => gemini({ prompt: task2Prompt(q, focus), search: true, readPages: true }).catch((err) => ({ failed: err })))
+      ...REVIEW_SEARCHES.map((focus) => collectReviews(q, focus))
     ]);
     const info = await step("Task 1 (reading the product details)", async () => readJson(t1.text));
     if (info.found === false) return res.status(404).json({ error: "Couldn’t find that product. Try the brand and model number." });
 
-    // Merge the Task 2 searches; one failing is fine as long as another worked
-    const worked = t2s.filter((t) => !t.failed);
-    if (!worked.length) throw new Error("Task 2 (collecting reviews) failed: " + (t2s[0].failed.message || "all review searches failed"));
-    const sources = [].concat(...worked.map((t) => t.sources), t1.sources);
+    // Merge the Task 2 searches and drop duplicates found by two searches
+    const sources = [].concat(...t2s.map((t) => t.sources), t1.sources);
     const seen = new Set();
     const found = [];
-    worked.forEach((t) => {
-      let list = [];
-      try { list = readJson(t.text).reviews || []; } catch (e) { return; } // skip a search whose answer can't be read
-      list.forEach((r) => {
-        if (!r || typeof r.text !== "string") return;
-        const key = r.text.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 80);
-        if (key.length < 20 || seen.has(key)) return; // drop duplicates found by two searches
-        seen.add(key);
-        found.push(r);
-      });
-    });
+    t2s.forEach((t) => t.reviews.forEach((r) => {
+      if (!r || typeof r.text !== "string") return;
+      const key = r.text.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 80);
+      if (key.length < 20 || seen.has(key)) return;
+      seen.add(key);
+      found.push(r);
+    }));
+    const report = t2s.map((t) => t.label + ": " + (t.problem || t.reviews.length + " reviews")).join(" | ");
     const usable = found.filter((r) => r && typeof r.text === "string" && r.text.trim().length > 20);
     const raw = usable
       .map((r) => Object.assign({}, r, { url: sources.length ? sourceFor(r.url, r.site, sources) : null }))
@@ -456,10 +481,10 @@ module.exports = async (req, res) => {
       .map((r, i) => ({
         id: "R" + (i + 1), site: String(r.site || hostOf(r.url) || "Web").trim(), url: r.url,
         rating: Math.max(0, Math.min(5, Math.round(Number(r.rating) || 0))),
-        date: /^\d{4}-\d{2}(-\d{2})?$/.test(r.date || "") ? r.date : "", verified: r.verified === true, text: r.text.trim()
+        date: /^\d{4}-\d{2}(-\d{2})?$/.test(r.date || "") ? r.date : "", verified: r.verified === true, summarised: r.summarised === true, text: r.text.trim()
       }));
     if (raw.length < 3) {
-      return res.status(404).json({ error: "Only " + raw.length + " usable reviews were found (Gemini returned " + found.length + ", from " + sources.length + " search sources). Try a more specific or more popular product." });
+      return res.status(404).json({ error: "Only " + raw.length + " usable reviews were found (Gemini returned " + found.length + ", from " + sources.length + " search sources). Details: " + report + ". Try a more specific or more popular product." });
     }
 
     const productName = [info.brand, info.name].filter(Boolean).join(" ") || q;
