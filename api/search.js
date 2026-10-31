@@ -1,6 +1,6 @@
 // ReviewWise AI backend: GET /api/search?q=<product name or link>
 //
-// The work is split into four AI tasks:
+// The work is split into four Gemini tasks:
 //   Task 1  Identify the product: official listing, warranty, close competitors (Gemini + Google Search)
 //   Task 2  Collect buyer reviews from public pages, with source links          (Gemini + Google Search)
 //   Task 3  Tag each review: sentiment, themes, exact sentences, usage situation (Gemini, structured JSON)
@@ -9,6 +9,7 @@
 // not by the AI, because language models are unreliable at counting.
 //
 // Needs one environment variable in Vercel: GEMINI_API_KEY
+// Google Search needs billing turned on in Google AI Studio (it isn't in the free tier).
 // Optional: GEMINI_MODEL (defaults to gemini-3.5-flash-lite)
 // Without a key, the page shows the fictional sample so the site still works.
 
@@ -44,7 +45,10 @@ async function gemini({ prompt, search = false, schema = null }) {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     const msg = (data.error && data.error.message) || "Gemini request failed";
-    const err = new Error(res.status === 429 ? "The free Gemini limit was reached. Wait a minute and try again." : msg);
+    const err = new Error(
+      res.status === 429 ? "The Gemini rate limit was reached. Wait a minute and try again." :
+      search && /search|grounding|tool/i.test(msg) ? "Google Search isn’t available for this Gemini key. Turn on billing for its project in Google AI Studio. (" + msg + ")" :
+      msg);
     err.status = res.status;
     throw err;
   }
@@ -69,13 +73,35 @@ function readJson(text) {
 
 const hostOf = (url) => { try { return new URL(url).hostname.replace(/^www\./, "").toLowerCase(); } catch (e) { return ""; } };
 
-// A link is kept only if Google Search actually returned a page from that website.
-function confirmedLink(url, sources) {
+// Google Search grounding returns sources as { uri, title }, where title is usually the site's domain
+// and uri is often a Google redirect link. A review is kept only if its website was among those sources.
+const REDIRECT = /(^|\.)vertexaisearch\.cloud\.google\.com$|(^|\.)google\.com$/;
+const norm = (s) => String(s || "").toLowerCase().replace(/^www\./, "").replace(/[^a-z0-9.]/g, "");
+
+function sourceFor(url, site, sources) {
   const host = hostOf(url);
-  if (!host) return null;
-  const hit = sources.find((s) => s.title && (host === s.title || host.endsWith("." + s.title) || s.title.endsWith(host)));
-  return hit ? url : null;
+  // 1. The link itself is a Google redirect that search produced
+  if (host && REDIRECT.test(host)) {
+    const hit = sources.find((s) => s.uri === url);
+    return hit ? hit.uri : (sources.length ? url : null);
+  }
+  // 2. The link's website matches a source's domain
+  if (host) {
+    const hit = sources.find((s) => s.title && (host === norm(s.title) || host.endsWith("." + norm(s.title)) || norm(s.title).endsWith(host)));
+    if (hit) return url;
+  }
+  // 3. The store name matches a source's domain, e.g. "Best Buy" and "bestbuy.com"
+  const name = norm(site).replace(/\./g, "");
+  if (name.length >= 3) {
+    const hit = sources.find((s) => {
+      const domain = norm(s.title).split(".")[0]; // "bestbuy.com" becomes "bestbuy"
+      return domain.length >= 3 && (domain.indexOf(name) >= 0 || name.indexOf(domain) >= 0);
+    });
+    if (hit) return hit.uri;
+  }
+  return null;
 }
+const confirmedLink = (url, sources) => sourceFor(url, "", sources);
 
 /* ------------------------------------------------------------------ */
 /* Task 1: identify the product                                        */
@@ -106,7 +132,7 @@ function task2Prompt(q) {
   return `Find real buyer and owner reviews of this product: "${q}".
 Use Google Search. Look at retailer reviews (Amazon, Best Buy, Walmart, Target), the manufacturer's own site, Reddit owner discussions, and Google reviews.
 Collect up to ${MAX_REVIEWS} separate reviews written by owners, not by professional reviewers or the shop.
-Copy each review's words exactly as written. Never write, combine or paraphrase a review. If you can't find the exact words, leave that review out.
+For each review, copy a short excerpt (up to about 60 words) exactly as the owner wrote it, choosing the part that says the most about their experience. Never write, combine or paraphrase a review. If you can't see the owner's exact words in your search results, leave that review out.
 Reply with only this JSON object, no other text:
 {
  "reviews": [
@@ -359,6 +385,12 @@ function finish(q, info, ins, reviews, byId, panels, themes, tags, suspicious, o
 /* The request handler                                                 */
 /* ------------------------------------------------------------------ */
 
+// Runs one task and labels any error with the task's name, so failures are easy to trace.
+async function step(name, fn) {
+  try { return await fn(); }
+  catch (err) { const e = new Error(name + " failed: " + (err.message || err)); e.status = err.status; throw e; }
+}
+
 module.exports = async (req, res) => {
   const q = String((req.query && req.query.q) || "").trim().slice(0, 200);
   if (!q) return res.status(400).json({ error: "Enter a product name or link." });
@@ -372,17 +404,18 @@ module.exports = async (req, res) => {
   try {
     // Tasks 1 and 2 at the same time
     const [t1, t2] = await Promise.all([
-      gemini({ prompt: task1Prompt(q), search: true }),
-      gemini({ prompt: task2Prompt(q), search: true })
+      step("Task 1 (identifying the product)", () => gemini({ prompt: task1Prompt(q), search: true })),
+      step("Task 2 (collecting reviews)", () => gemini({ prompt: task2Prompt(q), search: true }))
     ]);
-    const info = readJson(t1.text);
+    const info = await step("Task 1 (reading the product details)", async () => readJson(t1.text));
     if (info.found === false) return res.status(404).json({ error: "Couldn’t find that product. Try the brand and model number." });
 
     // Keep reviews whose website was really in the search results
     const sources = t2.sources.concat(t1.sources);
-    const raw = (readJson(t2.text).reviews || [])
-      .filter((r) => r && typeof r.text === "string" && r.text.trim().length > 20)
-      .map((r) => Object.assign({}, r, { url: r.url ? confirmedLink(r.url, sources) : null }))
+    const found = await step("Task 2 (reading the reviews)", async () => readJson(t2.text).reviews || []);
+    const usable = found.filter((r) => r && typeof r.text === "string" && r.text.trim().length > 20);
+    const raw = usable
+      .map((r) => Object.assign({}, r, { url: sources.length ? sourceFor(r.url, r.site, sources) : null }))
       .filter((r) => !sources.length || r.url)
       .slice(0, MAX_REVIEWS)
       .map((r, i) => ({
@@ -390,18 +423,20 @@ module.exports = async (req, res) => {
         rating: Math.max(0, Math.min(5, Math.round(Number(r.rating) || 0))),
         date: /^\d{4}-\d{2}-\d{2}$/.test(r.date || "") ? r.date : "", verified: r.verified === true, text: r.text.trim()
       }));
-    if (raw.length < 3) return res.status(404).json({ error: "Not enough reviews with confirmed sources were found for this product yet." });
+    if (raw.length < 3) {
+      return res.status(404).json({ error: "Only " + raw.length + " usable reviews were found (Gemini returned " + found.length + ", from " + sources.length + " search sources). Try a more specific or more popular product." });
+    }
 
     const productName = [info.brand, info.name].filter(Boolean).join(" ") || q;
 
     // Task 3
-    const t3 = await gemini({ prompt: task3Prompt(productName, raw), schema: TAG_SCHEMA });
-    const tags = JSON.parse(t3.text);
-    const b = build(q, info, t1.sources, raw, t2.sources, tags);
+    const t3 = await step("Task 3 (tagging reviews)", () => gemini({ prompt: task3Prompt(productName, raw), schema: TAG_SCHEMA }));
+    const tags = await step("Task 3 (reading the tags)", async () => readJson(t3.text));
+    const b = await step("Task 3 (counting)", async () => build(q, info, t1.sources, raw, t2.sources, tags));
 
     // Task 4
-    const t4 = await gemini({ prompt: task4Prompt(productName, b.themes, b.panels, b.reviews, tags.situations || []), schema: INSIGHT_SCHEMA });
-    const result = b.finish(JSON.parse(t4.text));
+    const t4 = await step("Task 4 (writing insights)", () => gemini({ prompt: task4Prompt(productName, b.themes, b.panels, b.reviews, tags.situations || []), schema: INSIGHT_SCHEMA }));
+    const result = await step("Task 4 (building the page)", async () => b.finish(readJson(t4.text)));
 
     cache.set(key, result);
     res.status(200).json(result);
@@ -410,4 +445,3 @@ module.exports = async (req, res) => {
     res.status(err.status === 429 ? 429 : 500).json({ error: err.message || "Something went wrong while analysing reviews." });
   }
 };
-
