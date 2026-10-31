@@ -115,6 +115,36 @@ function sourceFor(url, site, sources) {
 const confirmedLink = (url, sources) => sourceFor(url, "", sources);
 
 /* ------------------------------------------------------------------ */
+/* Website links for the product and competitors                       */
+/* ------------------------------------------------------------------ */
+
+// Indian homepages of common brands, used when a confirmed product page isn't available
+const BRAND_SITES = {
+  samsung: "https://www.samsung.com/in/", lg: "https://www.lg.com/in/", sony: "https://www.sony.co.in/",
+  xiaomi: "https://www.mi.com/in/", mi: "https://www.mi.com/in/", redmi: "https://www.mi.com/in/",
+  oneplus: "https://www.oneplus.in/", panasonic: "https://www.panasonic.com/in/", philips: "https://www.philips.co.in/",
+  haier: "https://www.haier.com/in/", tcl: "https://www.tcl.com/in/en", apple: "https://www.apple.com/in/"
+};
+
+// "https://www.samsung.com/in/tvs/x" becomes "samsung.com/in"
+function siteLabel(url) {
+  const host = hostOf(url);
+  let first = "";
+  try { first = new URL(url).pathname.split("/").filter(Boolean)[0] || ""; } catch (e) {}
+  return /^(in|en-in|in-en)$/i.test(first) ? host + "/" + first : host;
+}
+
+// Best working link: a confirmed page, else the brand's India site, else a web search
+function bestLink(url, brand, words, sources) {
+  const confirmed = url ? confirmedLink(url, sources) : null;
+  if (confirmed && !REDIRECT.test(hostOf(confirmed))) return { url: confirmed, label: siteLabel(confirmed), kind: "page" };
+  if (confirmed) return { url: confirmed, label: siteLabel(url) || "Product page", kind: "page" };
+  const site = BRAND_SITES[String(brand || "").toLowerCase().replace(/[^a-z]/g, "")];
+  if (site) return { url: site, label: siteLabel(site), kind: "brand" };
+  return { url: "https://www.google.com/search?q=" + encodeURIComponent(words + " India"), label: "Search the web", kind: "search" };
+}
+
+/* ------------------------------------------------------------------ */
 /* Task 1: identify the product                                        */
 /* ------------------------------------------------------------------ */
 
@@ -391,7 +421,7 @@ function finish(q, info, ins, reviews, byId, panels, themes, tags, suspicious, o
   const removed = suspicious + offTopic;
 
   const brand = info.brand || "";
-  const officialUrl = info.officialUrl ? confirmedLink(info.officialUrl, allSources) : null;
+  const official = bestLink(info.officialUrl, brand, [brand, info.name].filter(Boolean).join(" "), allSources);
   const w = info.warranty || {};
   const warrantyLink = w.sourceUrl ? confirmedLink(w.sourceUrl, allSources) : null;
 
@@ -402,7 +432,8 @@ function finish(q, info, ins, reviews, byId, panels, themes, tags, suspicious, o
       kicker: [brand, info.category].filter(Boolean).join(" / ").toUpperCase(),
       brand, name: info.name || q, description: info.description || "",
       short: [brand, info.description].filter(Boolean).join(" · "),
-      url: officialUrl, urlLabel: "Official " + (brand || "product") + " listing"
+      url: official.url,
+      urlLabel: official.kind === "page" ? "Official " + (brand || "product") + " listing" : official.kind === "brand" ? (brand || "Brand") + " India website" : "Search for this product"
     },
     summary: {
       headline: ins.headline,
@@ -421,8 +452,8 @@ function finish(q, info, ins, reviews, byId, panels, themes, tags, suspicious, o
       covered: w.covered || [], notCoveredTitle: "Not covered", notCovered: (w.notCovered || []).map((t) => ({ text: t }))
     } : null,
     competitors: (info.competitors || []).slice(0, 3).filter((c) => c.name).map((c) => {
-      const url = c.url ? confirmedLink(c.url, allSources) : null;
-      return { brand: (c.brand || "").toUpperCase(), name: c.name, model: c.model || "", tags: c.tags || [], url, site: url ? hostOf(url) : "" };
+      const link = bestLink(c.url, c.brand, [c.brand, c.name, c.model].filter(Boolean).join(" "), allSources);
+      return { brand: (c.brand || "").toUpperCase(), name: c.name, model: c.model || "", tags: c.tags || [], url: link.url, site: link.label };
     }),
     competitorsNote: "Their reviews haven’t been analyzed here, so no ratings or claims are shown for them.",
     reviews: reviews.map((r) => ({ id: r.id, site: r.site, date: r.date, rating: r.rating, verified: r.verified, url: r.url, sentiment: r.sentiment, summarised: r.summarised, text: r.text, contexts: r.contexts, hl: r.hl })),
