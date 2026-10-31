@@ -3,7 +3,7 @@
 // India-focused: Indian stores, India warranty terms, products sold in India.
 // The work is split into four Gemini tasks:
 //   Task 1  Identify the product: official listing, warranty, close competitors (Gemini + Google Search)
-//   Task 2  Collect buyer reviews from public pages, with source links          (Gemini + Google Search + page reading)
+//   Task 2  Collect buyer reviews from public pages, with source links          (Gemini + Google Search)
 //           Runs as 4 searches at once, each aimed at a different kind of source, then merged.
 //   Task 3  Tag each review: sentiment, themes, exact sentences, usage situation (Gemini, structured JSON)
 //   Task 4  Write the insights: headline, explanations, disagreements           (Gemini, structured JSON)
@@ -67,7 +67,8 @@ async function gemini({ prompt, search = false, readPages = false, schema = null
   ((cand.urlContextMetadata && cand.urlContextMetadata.urlMetadata) || []).forEach((m) => {
     if (m.retrievedUrl && /SUCCESS/i.test(m.urlRetrievalStatus || "")) sources.push({ uri: m.retrievedUrl, title: hostOf(m.retrievedUrl) });
   });
-  return { text, sources, finishReason: cand.finishReason || (data.promptFeedback && data.promptFeedback.blockReason) || "" };
+  const queries = (cand.groundingMetadata && cand.groundingMetadata.webSearchQueries) || [];
+  return { text, sources, queries, finishReason: cand.finishReason || (data.promptFeedback && data.promptFeedback.blockReason) || "" };
 }
 
 // Search-grounded answers can't be forced into a schema, so read the JSON out of the text.
@@ -150,7 +151,7 @@ function bestLink(url, brand, words, sources) {
 
 function task1Prompt(q) {
   return `You are researching a product for a shopper in India. The shopper searched for: "${q}".
-Use Google Search. Identify the exact product as sold in India, then find its official product page on the manufacturer's Indian website (for example sony.co.in, samsung.com/in or lg.com/in), the manufacturer warranty offered in India, and 3 close competitors that are sold in India.
+You must use Google Search before answering; don't answer from memory. Identify the exact product as sold in India, then find its official product page on the manufacturer's Indian website (for example sony.co.in, samsung.com/in or lg.com/in), the manufacturer warranty offered in India, and 3 close competitors that are sold in India.
 Reply with only this JSON object, no other text:
 {
  "found": true or false,
@@ -171,21 +172,23 @@ Only include facts you found in search results. Use empty strings or empty lists
 
 // Each Task 2 search looks at a different kind of source, so together they cover more ground.
 const REVIEW_SEARCHES = [
-  "Amazon India (amazon.in) customer reviews",
-  "Flipkart (flipkart.com) customer reviews and ratings",
-  "reviews on other Indian retailers such as Croma, Reliance Digital, Vijay Sales and Tata CLiQ, and on the brand's Indian website",
-  "Reddit threads and Indian forums where owners in India describe their experience, including delivery, installation, after-sales service and long-term use"
+  { label: "Amazon", focus: "Amazon India (amazon.in) customer reviews", queries: (q) => [`"${q}" reviews site:amazon.in`, `${q} amazon.in customer review`] },
+  { label: "Flipkart", focus: "Flipkart (flipkart.com) customer reviews and ratings", queries: (q) => [`"${q}" reviews site:flipkart.com`, `${q} flipkart ratings and reviews`] },
+  { label: "Other stores", focus: "reviews on other Indian retailers such as Croma, Reliance Digital, Vijay Sales and Tata CLiQ, and on the brand's Indian website", queries: (q) => [`${q} reviews croma`, `${q} reviews reliance digital`, `${q} customer reviews India`] },
+  { label: "Forums", focus: "Reddit threads and Indian forums where owners in India describe their experience, including delivery, installation, after-sales service and long-term use", queries: (q) => [`${q} reddit india owner experience`, `${q} review after months india`] }
 ];
+const BROAD_SEARCH = { label: "Any Indian site", focus: "owner reviews from buyers in India on any website", queries: (q) => [`${q} review india`, `${q} owner review`, `${q} user reviews`] };
 
-function task2Prompt(q, focus, summarise) {
+function task2Prompt(q, search, summarise) {
   const how = summarise
     ? `For each review, write a one or two sentence summary in your own words of what the owner reported, in the third person (for example: "The owner says the picture is sharp but the speakers are weak."). Don't quote them.`
     : `For each review, copy one or two short sentences (under 25 words) exactly as the owner wrote them, choosing the part that says the most about their experience. Never write, combine or paraphrase a review. If you can't see the owner's exact words, leave that review out.`;
-  return `Find real reviews by buyers in India of this product: "${q}".
-Focus on: ${focus}.
-Only include reviews from India. Skip reviews that are clearly from buyers in other countries.
-Use Google Search, then open the most useful pages you find and read the reviews on them.
-Collect up to ${PER_SEARCH} separate reviews written by owners, not by professional reviewers or the shop.
+  return `Find real reviews by buyers of this product: "${q}".
+Focus on: ${search.focus}.
+You must use Google Search before answering; don't answer from memory. Run searches such as:
+${search.queries(q).map((x) => "- " + x).join("\n")}
+Prefer reviews by buyers in India.
+Collect up to ${PER_SEARCH} separate reviews written by owners, not by professional reviewers or the shop. Search snippets that show an owner's words count.
 ${how}
 Reply with only this JSON object, no other text:
 {
@@ -195,30 +198,29 @@ Reply with only this JSON object, no other text:
 }`;
 }
 
-// One Task 2 search. If Google's copyright filter blocks exact quotes, or nothing usable comes back,
-// it retries once asking for short summaries, which the page labels as AI summaries.
-async function collectReviews(q, focus) {
-  const label = focus.split(/[ (,]/)[0] + (focus.startsWith("reviews on other") ? " other stores" : "");
+// One Task 2 search. Tries exact quotes first. If Gemini skipped searching, it asks again;
+// if quotes are blocked or nothing comes back, it asks for short summaries, which the page labels.
+async function collectReviews(q, search) {
+  const notes = [];
+  let sources = [];
   const attempt = async (summarise) => {
-    const r = await gemini({ prompt: task2Prompt(q, focus, summarise), search: true, readPages: true });
+    const r = await gemini({ prompt: task2Prompt(q, search, summarise), search: true });
+    sources = sources.concat(r.sources);
     let reviews = [], problem = "";
     if (!r.text) problem = "empty answer" + (r.finishReason ? " (" + r.finishReason + ")" : "");
     else { try { reviews = readJson(r.text).reviews || []; } catch (e) { problem = "answer wasn't readable" + (r.finishReason && r.finishReason !== "STOP" ? " (" + r.finishReason + ")" : ""); } }
     if (!problem && !reviews.length) problem = "no reviews found";
+    notes.push((summarise ? "summaries" : "quotes") + ": " + (problem || reviews.length + " reviews") + ", " + r.queries.length + " searches run");
     reviews.forEach((x) => { if (x) x.summarised = summarise; });
-    return { reviews, sources: r.sources, problem };
+    return { reviews, searched: r.queries.length > 0 };
   };
   try {
     let r = await attempt(false);
-    if (!r.reviews.length) {
-      const again = await attempt(true);
-      again.problem = again.reviews.length ? "" : r.problem + "; retry with summaries: " + again.problem;
-      again.sources = again.sources.concat(r.sources);
-      r = again;
-    }
-    return Object.assign({ label }, r);
+    if (!r.reviews.length && !r.searched) r = await attempt(false); // Gemini answered without searching: ask again
+    if (!r.reviews.length) r = await attempt(true);
+    return { label: search.label, reviews: r.reviews, sources, problem: r.reviews.length ? "" : notes.join("; ") };
   } catch (err) {
-    return { label, reviews: [], sources: [], problem: err.message || "failed" };
+    return { label: search.label, reviews: [], sources, problem: err.message || "failed" };
   }
 }
 
@@ -486,8 +488,9 @@ module.exports = async (req, res) => {
     // Task 1 and the four Task 2 searches at the same time
     const [t1, ...t2s] = await Promise.all([
       step("Task 1 (identifying the product)", () => gemini({ prompt: task1Prompt(q), search: true })),
-      ...REVIEW_SEARCHES.map((focus) => collectReviews(q, focus))
+      ...REVIEW_SEARCHES.map((search) => collectReviews(q, search))
     ]);
+    if (!t2s.some((t) => t.reviews.length)) t2s.push(await collectReviews(q, BROAD_SEARCH)); // last try: any Indian site
     const info = await step("Task 1 (reading the product details)", async () => readJson(t1.text));
     if (info.found === false) return res.status(404).json({ error: "Couldn’t find that product. Try the brand and model number." });
 
@@ -502,7 +505,7 @@ module.exports = async (req, res) => {
       seen.add(key);
       found.push(r);
     }));
-    const report = t2s.map((t) => t.label + ": " + (t.problem || t.reviews.length + " reviews")).join(" | ");
+    const report = "Task 1 ran " + t1.queries.length + " searches | " + t2s.map((t) => t.label + ": " + (t.problem || t.reviews.length + " reviews")).join(" | ");
     const usable = found.filter((r) => r && typeof r.text === "string" && r.text.trim().length > 20);
     const raw = usable
       .map((r) => Object.assign({}, r, { url: sources.length ? sourceFor(r.url, r.site, sources) : null }))
