@@ -1,20 +1,40 @@
 // YouTube source for ReviewWise AI (free YouTube Data API v3).
 // Finds review videos for the product, then collects comments where viewers describe owning it.
-// Needs YOUTUBE_API_KEY in Vercel. Uses about 110 of the 10,000 free daily quota units per search.
+// Needs YOUTUBE_API_KEY in Vercel.
+// Quota: each video search costs 100 units and each page of comments costs 1, out of 10,000 free a day.
+// With the defaults below, one product search uses about 225 units, so roughly 44 searches a day.
+// Optional settings in Vercel:
+//   YOUTUBE_MAX_COMMENTS  comments kept per product search (default 100)
+//   YOUTUBE_VIDEOS        videos read (default 12)
+//   YOUTUBE_PAGES         pages of 100 comments read per video (default 2)
+//   YOUTUBE_SEARCHES      video searches run: 1 = "review", 2 adds "long term review",
+//                         3 adds "user review" (default 2)
+// Hindi and Hinglish videos and comments are left out.
 
 const API = "https://www.googleapis.com/youtube/v3/";
-const VIDEOS = 8;          // videos to read comments from
-const PER_VIDEO = 100;     // comments fetched per video (the most YouTube returns in one call)
-const KEEP = 50;           // comments kept in total
+const num = (v, d, lo, hi) => Math.max(lo, Math.min(hi, Number(v) || d));
+const KEEP = num(process.env.YOUTUBE_MAX_COMMENTS, 100, 1, 300);
+const VIDEOS = num(process.env.YOUTUBE_VIDEOS, 12, 1, 25);
+const PAGES = num(process.env.YOUTUBE_PAGES, 2, 1, 5);
+const SEARCHES = num(process.env.YOUTUBE_SEARCHES, 2, 1, 3);
+const QUERIES = [" review", " long term review", " user review"];
 
-// Comments that sound like someone who owns or bought the product, in English or Hinglish
-const OWNER = /\b(i (have )?(bought|purchased|got|ordered|own|use)|i'?m using|i am using|been using|using (it|this|the)|my (tv|unit|set|one|phone|laptop|device)|after \d+ (days?|weeks?|months?|years?)|\d+ (days?|weeks?|months?|years?) (of use|now|later|in)|installed|installation|delivered|delivery|service cent(er|re)|warranty|kharid|liya|le liya|use kar|chala raha)\b/i;
+// Hindi script, or Hindi typed in English letters (Hinglish). Two or more common Hindi words counts.
+const HINGLISH = /\b(hai|hain|nahi|nahin|kya|kyu|kyun|bahut|bohot|accha|acha|achha|liya|kharida|kharid|mera|meri|mujhe|maine|humne|raha|rahi|chal|chala|bhi|yaar|bhai|kaafi|kafi|lekin|par|aur|ekdum|bilkul|jaisa|wala|wali|karo|karna|karta)\b/gi;
+function isHindi(text) {
+  const t = String(text || "");
+  if (/[\u0900-\u097F]/.test(t)) return true;
+  return (t.match(HINGLISH) || []).length >= 2;
+}
+
+// Comments that sound like someone who owns or bought the product
+const OWNER = /\b(i (have )?(bought|purchased|got|ordered|own|use)|i'?m using|i am using|been using|using (it|this|the)|my (tv|unit|set|one|phone|laptop|device)|after \d+ (days?|weeks?|months?|years?)|\d+ (days?|weeks?|months?|years?) (of use|now|later|in)|installed|installation|delivered|delivery|service cent(er|re)|warranty)\b/i;
 
 // Longer comments that describe the product's qualities also count, even without "I bought"
 const EXPERIENCE = /\b(picture|display|screen|colou?rs?|brightness|sound|audio|speakers?|bass|remote|software|apps?|lag|heat(ing)?|battery|build|quality|performance|service|price|worth|value|problem|issue|defect|faulty|replace(d|ment)?|repair)\b/i;
 
 function looksUseful(text) {
-  if (text.length < 40 || text.length > 1200) return false;
+  if (text.length < 40 || text.length > 1200 || isHindi(text)) return false;
   if (/\?\s*$/.test(text) && text.length < 120) return false;          // short questions, e.g. "Which is better?"
   if (/\b(sir|bhai|brother)\b.*\b(reply|suggest|tell)\b/i.test(text)) return false; // asking the creator for advice
   return OWNER.test(text) || (text.length >= 80 && EXPERIENCE.test(text));
@@ -44,17 +64,39 @@ function matchesProduct(title, name) {
 async function youtubeReviews(productName) {
   if (!process.env.YOUTUBE_API_KEY) return { label: "YouTube", reviews: [], skipped: true, problem: "not connected" };
   try {
-    const found = await get("search", { part: "snippet", type: "video", maxResults: "20", regionCode: "IN", relevanceLanguage: "en", q: productName + " review" });
-    const videos = (found.items || [])
-      .filter((v) => v.id && v.id.videoId && matchesProduct(v.snippet && v.snippet.title, productName))
-      .slice(0, VIDEOS);
+    // Run the video searches and merge them, skipping videos that aren't about this product
+    const results = await Promise.all(QUERIES.slice(0, SEARCHES).map((suffix) =>
+      get("search", { part: "snippet", type: "video", maxResults: "25", regionCode: "IN", relevanceLanguage: "en", q: productName + suffix })
+        .then((d) => d.items || [])
+        .catch((err) => { if (err.reason === "quotaExceeded") throw err; return []; })));
+    const seenVideos = new Set();
+    const videos = [];
+    results.forEach((items) => items.forEach((v) => {
+      const id = v.id && v.id.videoId;
+      const title = v.snippet && v.snippet.title;
+      if (!id || seenVideos.has(id) || !matchesProduct(title, productName) || isHindi(title) || /\bhindi\b/i.test(title)) return;
+      seenVideos.add(id);
+      videos.push(v);
+    }));
+    videos.splice(VIDEOS);
     if (!videos.length) return { label: "YouTube", reviews: [], problem: "no matching review videos" };
 
-    const lists = await Promise.all(videos.map((v) =>
-      get("commentThreads", { part: "snippet", videoId: v.id.videoId, maxResults: String(PER_VIDEO), order: "relevance", textFormat: "plainText" })
-        .then((d) => ({ video: v, items: d.items || [] }))
-        .catch(() => ({ video: v, items: [] })) // comments turned off on this video
-    ));
+    // Read up to PAGES pages of comments from each video, all videos at the same time
+    const readVideo = async (v) => {
+      const items = [];
+      let pageToken = "";
+      for (let page = 0; page < PAGES; page++) {
+        const params = { part: "snippet", videoId: v.id.videoId, maxResults: "100", order: "relevance", textFormat: "plainText" };
+        if (pageToken) params.pageToken = pageToken;
+        let d;
+        try { d = await get("commentThreads", params); } catch (e) { break; } // comments turned off on this video
+        items.push.apply(items, d.items || []);
+        if (!d.nextPageToken) break;
+        pageToken = d.nextPageToken;
+      }
+      return { video: v, items };
+    };
+    const lists = await Promise.all(videos.map(readVideo));
 
     const comments = [];
     lists.forEach(({ video, items }) => items.forEach((t) => {
@@ -77,4 +119,4 @@ async function youtubeReviews(productName) {
   }
 }
 
-module.exports = { youtubeReviews };
+module.exports = { youtubeReviews, isHindi };
