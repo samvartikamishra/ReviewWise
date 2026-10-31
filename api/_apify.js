@@ -3,13 +3,13 @@
 // Optional settings in Vercel:
 //   APIFY_FLIPKART_ACTOR  (default automation-lab~flipkart-product-reviews-scraper)
 //   APIFY_AMAZON_ACTOR    (default scrapeai~amazon-reviews-scraper)
-//   APIFY_MAX_REVIEWS     reviews per store per search (default 20)
+//   APIFY_MAX_REVIEWS     reviews per store per search (default 40, most 50)
 // These collectors are built by independent developers on Apify, so they can stop working when the
 // stores change their sites. If one fails, the search continues with the other sources.
 
 const FLIPKART_ACTOR = process.env.APIFY_FLIPKART_ACTOR || "automation-lab~flipkart-product-reviews-scraper";
 const AMAZON_ACTOR = process.env.APIFY_AMAZON_ACTOR || "scrapeai~amazon-reviews-scraper";
-const MAX = Math.max(1, Math.min(50, Number(process.env.APIFY_MAX_REVIEWS) || 20));
+const MAX = Math.max(1, Math.min(50, Number(process.env.APIFY_MAX_REVIEWS) || 40));
 
 /* ---------- Product links ---------- */
 
