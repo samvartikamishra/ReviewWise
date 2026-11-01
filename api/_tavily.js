@@ -106,4 +106,28 @@ async function tavilyReviews(productName, extract) {
   }
 }
 
-module.exports = { tavilyReviews, RETAILERS };
+// Finds the product's real Amazon.in and Flipkart page addresses, so the Apify collectors know where
+// to look. Gemini's search returns Google redirect links, which the collectors can't use.
+// Two basic searches, 2 credits.
+async function findStoreLinks(productName) {
+  if (!process.env.TAVILY_API_KEY) return {};
+  const look = async (domain, pattern) => {
+    try {
+      const res = await fetch("https://api.tavily.com/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + process.env.TAVILY_API_KEY },
+        body: JSON.stringify({ query: productName, search_depth: "basic", include_domains: [domain], include_domains_mode: "restrict", max_results: 8, country: "india" })
+      });
+      const data = await res.json().catch(() => ({}));
+      const hit = (data.results || []).find((r) => pattern.test(String(r.url || "")) && samePage(r, productName));
+      return hit ? hit.url : null;
+    } catch (e) { return null; }
+  };
+  const [amazon, flipkart] = await Promise.all([
+    look("amazon.in", /amazon\.in\/(?:[^?#]*\/)?(?:dp|gp\/product)\/[A-Z0-9]{10}/i),
+    look("flipkart.com", /flipkart\.com\/[^?#]*\/p\/itm[a-z0-9]+[^#]*[?&]pid=/i)
+  ]);
+  return { amazon, flipkart };
+}
+
+module.exports = { tavilyReviews, findStoreLinks, RETAILERS };
