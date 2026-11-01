@@ -23,7 +23,7 @@
 const SAMPLE = require("./_sample.json");
 const { youtubeReviews, isHindi } = require("./_youtube.js");
 const { flipkartReviews, amazonReviews, amazonLink, flipkartLink } = require("./_apify.js");
-const { tavilyReviews, findStoreLinks } = require("./_tavily.js");
+const { tavilyReviews, findStoreLinks, findProductPage } = require("./_tavily.js");
 
 const MODEL = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
 const API = "https://generativelanguage.googleapis.com/v1beta/models/";
@@ -141,6 +141,10 @@ const BRAND_SITES = {
   oneplus: "https://www.oneplus.in/", panasonic: "https://www.panasonic.com/in/", philips: "https://www.philips.co.in/",
   haier: "https://www.haier.com/in/", tcl: "https://www.tcl.com/in/en", apple: "https://www.apple.com/in/"
 };
+
+// Store pages are labelled with the store's name rather than as the brand's official listing
+const STORE_NAMES = { "croma.com": "Croma", "reliancedigital.in": "Reliance Digital", "tatacliq.com": "Tata CLiQ", "vijaysales.com": "Vijay Sales", "amazon.in": "Amazon.in", "flipkart.com": "Flipkart" };
+function storeName(url) { const h = hostOf(url); const d = Object.keys(STORE_NAMES).find((k) => h === k || h.endsWith("." + k)); return d ? STORE_NAMES[d] : ""; }
 
 // "https://www.samsung.com/in/tvs/x" becomes "samsung.com/in"
 function siteLabel(url) {
@@ -480,7 +484,9 @@ function finish(q, info, ins, reviews, byId, panels, themes, tags, suspicious, o
   const removed = suspicious + offTopic;
 
   const brand = info.brand || "";
-  const official = bestLink(info.officialUrl, brand, [brand, info.name].filter(Boolean).join(" "), allSources);
+  const official = info.officialPage
+    ? { url: info.officialPage, label: siteLabel(info.officialPage), kind: "page" }
+    : bestLink(info.officialUrl, brand, [brand, info.name].filter(Boolean).join(" "), allSources);
   const w = info.warranty || {};
   const warrantyLink = w.sourceUrl ? confirmedLink(w.sourceUrl, allSources) : null;
 
@@ -492,7 +498,9 @@ function finish(q, info, ins, reviews, byId, panels, themes, tags, suspicious, o
       brand, name: info.name || q, description: info.description || "",
       short: [brand, info.description].filter(Boolean).join(" · "),
       url: official.url,
-      urlLabel: official.kind === "page" ? "Official " + (brand || "product") + " listing" : official.kind === "brand" ? (brand || "Brand") + " India website" : "Search for this product"
+      urlLabel: official.kind === "page"
+        ? (storeName(official.url) ? "View on " + storeName(official.url) : "Official " + (brand || "product") + " listing")
+        : official.kind === "brand" ? (brand || "Brand") + " India website" : "Search for this product"
     },
     summary: {
       headline: ins.headline,
@@ -510,8 +518,10 @@ function finish(q, info, ins, reviews, byId, panels, themes, tags, suspicious, o
       note: (w.summary ? w.summary + ". " : "") + (warrantyLink ? "From the manufacturer’s terms." : "Found by AI search. Check the official terms."),
       covered: w.covered || [], notCoveredTitle: "Not covered", notCovered: (w.notCovered || []).map((t) => ({ text: t }))
     } : null,
-    competitors: (info.competitors || []).slice(0, 3).filter((c) => c.name).map((c) => {
-      const link = bestLink(c.url, c.brand, [c.brand, c.name, c.model].filter(Boolean).join(" "), allSources);
+    competitors: (info.competitors || []).slice(0, 3).filter((c) => c.name).map((c, i) => {
+      const page = info.competitorPages && info.competitorPages[i];   // exact page found by Tavily
+      const link = page ? { url: page, label: storeName(page) || siteLabel(page), kind: "page" }
+        : bestLink(c.url, c.brand, [c.brand, c.name, c.model].filter(Boolean).join(" "), allSources);
       return { brand: (c.brand || "").toUpperCase(), name: c.name, model: c.model || "", tags: c.tags || [], url: link.url, site: link.label };
     }),
     competitorsNote: "Their reviews haven’t been analyzed here, so no ratings or claims are shown for them.",
@@ -555,8 +565,16 @@ module.exports = async (req, res) => {
       const extract = async (prompt, schema) => readJson((await gemini({ prompt, schema })).text); // Gemini reads Tavily's pages
       return Promise.all([flipkartReviews(flipkart, name), amazonReviews(amazon, name), tavilyReviews(name, extract), youtubeReviews(name)]);
     }).catch(() => []);
-    const [t1, info, extras, ...geminiSearches] = await Promise.all([
-      t1Promise, infoPromise, extraPromise,
+    // Exact product pages for this product and its competitors, looked up while reviews are collected
+    const pagesPromise = infoPromise.then((info) => {
+      info.competitors = (info.competitors || []).slice(0, 3).filter((c) => c && c.name);
+      return Promise.all([
+        findProductPage(info.brand, [info.brand, info.name].filter(Boolean).join(" ")),
+        ...info.competitors.map((c) => findProductPage(c.brand, [c.brand, c.name, c.model].filter(Boolean).join(" ")))
+      ]).then(([official, ...rivals]) => { info.officialPage = official; info.competitorPages = rivals; });
+    }).catch(() => {});
+    const [t1, info, extras, , ...geminiSearches] = await Promise.all([
+      t1Promise, infoPromise, extraPromise, pagesPromise,
       ...REVIEW_SEARCHES
         .filter((search) => !(process.env.TAVILY_API_KEY && search.retailers)) // Tavily reads these retailers directly
         .map((search) => collectReviews(q, search))
