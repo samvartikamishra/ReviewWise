@@ -33,10 +33,14 @@ const OWNER = /\b(i (have )?(bought|purchased|got|ordered|own|use)|i'?m using|i 
 // Longer comments that describe the product's qualities also count, even without "I bought"
 const EXPERIENCE = /\b(picture|display|screen|colou?rs?|brightness|sound|audio|speakers?|bass|remote|software|apps?|lag|heat(ing)?|battery|build|quality|performance|service|price|worth|value|problem|issue|defect|faulty|replace(d|ment)?|repair)\b/i;
 
+// Ordered or planning to buy, but not using it yet
+const NOT_YET = /\b(can'?t wait|cannot wait|waiting for (it|delivery|the delivery|installation)|yet to (be )?(deliver|arriv|install|receiv|use)|(will|to) (be )?(arrive|delivered) (on|by|tomorrow|next)|arriving (on|tomorrow|next)|planning to (buy|get|order)|thinking (of|about) (buying|getting)|should i (buy|get)|going to (buy|get|order)|will (buy|get|order) (it|this|one)|in my cart|pre-?ordered)\b/i;
+
 function looksUseful(text) {
   if (text.length < 40 || text.length > 1200 || isHindi(text)) return false;
   if (/\?\s*$/.test(text) && text.length < 120) return false;          // short questions, e.g. "Which is better?"
   if (/\b(sir|bhai|brother)\b.*\b(reply|suggest|tell)\b/i.test(text)) return false; // asking the creator for advice
+  if (NOT_YET.test(text)) return false;                                   // hasn't used it yet
   return OWNER.test(text) || (text.length >= 80 && EXPERIENCE.test(text));
 }
 
