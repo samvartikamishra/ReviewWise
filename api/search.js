@@ -787,7 +787,8 @@ module.exports = async (req, res) => {
     const plain = (p) => /searches run|answer|RECITATION/.test(p || "") ? "no reviews found" : (p || "no reviews found");
     result.collection = bySource.map((t) => ({
       source: t.label,
-      status: t.skipped ? "not connected" : used[t.label] ? plural(used[t.label], "review") + " used" : t.reviews.length ? "found " + plural(t.reviews.length, "review") + ", none usable" : plain(t.problem)
+      status: t.skipped ? "not connected" : used[t.label] ? plural(used[t.label], "review") + " used" : t.reviews.length ? "found " + plural(t.reviews.length, "review") + ", none usable" : plain(t.problem),
+      page: t.link || undefined   // the store page a collector read, for checking it's the right product
     }));
 
     result.analyzedAt = new Date().toISOString().slice(0, 10);
