@@ -26,7 +26,18 @@ module.exports = async (req, res) => {
   const say = (ok, label, detail) => lines.push((ok ? "PASS  " : "FAIL  ") + label + (detail ? "\n      " + detail : ""));
   res.setHeader("Content-Type", "text/plain; charset=utf-8");
   res.setHeader("Cache-Control", "no-store");
-  lines.push("ReviewWise AI check", "Model: " + MODEL, "");
+  lines.push("ReviewWise AI check", "Model: " + MODEL);
+
+  // Which deployment is answering, and which related settings it can see (names only, never values)
+  const sha = String(process.env.VERCEL_GIT_COMMIT_SHA || "").slice(0, 7);
+  lines.push("Deployment: " + (process.env.VERCEL_ENV || "unknown") + (sha ? ", built from commit " + sha : "") +
+    (process.env.VERCEL_GIT_COMMIT_MESSAGE ? " (\"" + String(process.env.VERCEL_GIT_COMMIT_MESSAGE).split("\n")[0].slice(0, 60) + "\")" : "") +
+    (process.env.VERCEL_GIT_REPO_SLUG ? ", repository " + process.env.VERCEL_GIT_REPO_OWNER + "/" + process.env.VERCEL_GIT_REPO_SLUG : ""));
+  const related = Object.keys(process.env).filter((k) => /tavily|apify|youtube|gemini|anthropic|kv_|upstash|redis/i.test(k)).sort();
+  lines.push("Settings this deployment can see: " + (related.length ? related.map((k) => JSON.stringify(k)).join(", ") : "none"));
+  const nearMiss = related.filter((k) => /tavily/i.test(k) && k !== "TAVILY_API_KEY");
+  if (nearMiss.length) lines.push("Note: found " + nearMiss.map((k) => JSON.stringify(k)).join(", ") + ", but the name must be exactly \"TAVILY_API_KEY\".");
+  lines.push("");
 
   const key = process.env.GEMINI_API_KEY || "";
   if (!key) {
