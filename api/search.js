@@ -115,6 +115,47 @@ const ABROAD_URL = /(\bamazon\.(com|co\.uk|ca|de|com\.au)(\/|$)|bestbuy\.|walmar
 const ABROAD_SITE = /\b(US|USA|UK|U\.S\.|Canada|Australia|Best ?Buy|Walmart|Target|Costco|Crutchfield)\b/;
 const fromAbroad = (r) => ABROAD_URL.test(String(r.url || "")) || ABROAD_SITE.test(String(r.site || ""));
 
+// ---------- Pasted product links ----------
+// Looks like a web address rather than a product name
+const isLink = (q) => /^(https?:\/\/|www\.)|^[a-z0-9-]+(\.[a-z0-9-]+)+\/\S*$/i.test(q.trim());
+const SHORT_LINK = /^(amzn\.(in|to|eu)|a\.co|dl\.flipkart\.com|fkrt\.(it|cc|to)|bit\.ly|tinyurl\.com)$/i;
+
+// Short links (amzn.in/d/…, dl.flipkart.com/s/…) point to the full product page; follow them
+async function fullLink(raw) {
+  let url = raw.trim();
+  if (!/^https?:\/\//i.test(url)) url = "https://" + url;
+  for (let hop = 0; hop < 4; hop++) {
+    let host = "";
+    try { host = new URL(url).hostname.replace(/^www\./, ""); } catch (e) { return url; }
+    if (!SHORT_LINK.test(host)) return url;
+    try {
+      const r = await fetch(url, { method: "GET", redirect: "manual", headers: { "User-Agent": "Mozilla/5.0 (compatible; ReviewWise)" } });
+      const next = r.headers.get("location");
+      if (!next) return url;
+      url = new URL(next, url).toString();
+    } catch (e) { return url; }
+  }
+  return url;
+}
+
+// The product name written into most product page addresses, e.g.
+// amazon.in/Samsung-Crystal-Vision-55-inch/dp/B0… -> "Samsung Crystal Vision 55 inch"
+function nameFromLink(url) {
+  let u;
+  try { u = new URL(url); } catch (e) { return ""; }
+  const parts = u.pathname.split("/").map((p) => { try { return decodeURIComponent(p); } catch (e) { return p; } })
+    .filter((p) => /[a-z]/i.test(p) && /[-_+ ]/.test(p))                       // words joined by - or _
+    .filter((p) => !/^(dp|gp|product|products|p|s|in|en|en-in|buy|shop|item|itm[a-z0-9]+)$/i.test(p));
+  if (!parts.length) {
+    const q = u.searchParams.get("q") || u.searchParams.get("k") || u.searchParams.get("query") || "";
+    return q.trim();
+  }
+  const best = parts.sort((a, b) => b.split(/[-_+ ]/).length - a.split(/[-_+ ]/).length)[0];
+  return best.replace(/\.(html?|aspx?|php)$/i, "").split(/[-_+ ]+/)
+    .filter((w) => w && !/^(itm[a-z0-9]+|[A-Z0-9]{10}|\d{6,}|p\d+)$/.test(w))  // product ids
+    .slice(0, 14).join(" ").trim();
+}
+
 // Product kinds for the page icon; Task 1 picks one (the page has a matching icon for each)
 const PRODUCT_KINDS = ["smartphone", "tablet", "laptop", "desktop computer", "monitor", "television", "projector", "headphones", "earbuds", "smartwatch or fitness band", "speaker or soundbar", "camera", "drone", "gaming console or controller", "keyboard", "mouse", "printer", "router or wifi device", "hard drive or SSD", "pen drive or memory card", "power bank", "charger or adapter", "cable", "refrigerator", "washing machine", "air conditioner", "fan or air cooler", "heater or geyser", "microwave or oven", "mixer, blender or juicer", "cookware or kitchen appliance", "coffee machine", "water purifier", "vacuum cleaner", "light or bulb", "lamp", "trimmer or grooming", "toothbrush", "weighing scale", "furniture", "bed or mattress", "clothing", "shoes", "bag or luggage", "eyewear", "jewellery", "book", "toy", "baby product", "bicycle", "car or car accessory", "fitness equipment", "musical instrument", "health product", "calculator", "solar panel", "flashlight", "other"];
 
@@ -201,8 +242,12 @@ function bestLink(url, brand, words, sources) {
 /* Task 1: identify the product                                        */
 /* ------------------------------------------------------------------ */
 
-function task1Prompt(q) {
-  return `You are researching a product for a shopper in India. The shopper searched for: "${q}".
+function task1Prompt(q, link) {
+  const asked = link
+    ? `The shopper pasted this product page link: ${link}
+The words in the link suggest the product is: "${q}".`
+    : `The shopper searched for: "${q}".`;
+  return `You are researching a product for a shopper in India. ${asked}
 You must use Google Search before answering; don't answer from memory. Identify the exact product as sold in India, then find its official product page on the manufacturer's Indian website (for example sony.co.in, samsung.com/in or lg.com/in), the manufacturer warranty offered in India, and 3 close competitors that are sold in India.
 Reply with only this JSON object, no other text:
 {
@@ -592,10 +637,29 @@ module.exports = async (req, res) => {
   }
 
   try {
+    // A pasted link: follow short links, then read the product name from the address
+    let link = null, text = q;
+    if (isLink(q)) {
+      link = await fullLink(q);
+      text = nameFromLink(link);
+      if (!text) {
+        // No name in the address, but an Amazon or Flipkart product code is often enough for Google
+        const asin = (link.match(/amazon\.[a-z.]+\/(?:[^?#]*\/)?(?:dp|gp\/product)\/([A-Z0-9]{10})/i) || [])[1];
+        const pid = (link.match(/flipkart\.com\/[^#]*[?&]pid=([A-Z0-9]+)/i) || [])[1];
+        if (asin) text = "Amazon.in product " + asin.toUpperCase();
+        else if (pid) text = "Flipkart product " + pid.toUpperCase();
+        else return res.status(400).json({ error: "That link doesn’t include the product’s name. Paste the full link from the product’s page, or type the product name instead." });
+      }
+    }
+
     // Task 1 first: identify the product, then reuse a saved analysis of it if there is one
-    const t1Done = await step("Task 1 (identifying the product)", () => gemini({ prompt: task1Prompt(q), search: true }));
+    const t1Done = await step("Task 1 (identifying the product)", () => gemini({ prompt: task1Prompt(text, link), search: true }));
     const infoDone = await step("Task 1 (reading the product details)", async () => readJson(t1Done.text));
-    if (infoDone.found === false) return res.status(404).json({ error: "Couldn’t find that product. Try the brand and model number." });
+    // What the review searches look for: the shopper's words, or for a link, the product Task 1 identified
+    const searchText = link ? ([infoDone.brand, infoDone.name].filter(Boolean).join(" ") || text) : q;
+    if (infoDone.found === false) return res.status(404).json({ error: link
+      ? "Couldn’t work out which product that link is for. Try pasting the full link from the product’s page, or type the product name."
+      : "Couldn’t find that product. Try the brand and model number." });
     const pKey = productKey(infoDone);
     if (!fresh) {
       const saved = await cacheGet(pKey);
@@ -607,11 +671,11 @@ module.exports = async (req, res) => {
     const t1Promise = Promise.resolve(t1Done);
     const infoPromise = Promise.resolve(infoDone);
     const extraPromise = infoPromise.then(async (info) => {
-      const name = [info.brand, info.name].filter(Boolean).join(" ") || q;
+      const name = [info.brand, info.name].filter(Boolean).join(" ") || searchText;
       // Store links: a pasted link first, then one Tavily found, then one from Gemini's search
-      const found = (amazonLink(q) && flipkartLink(q)) ? {} : await findStoreLinks(name);
-      const amazon = amazonLink(q) || amazonLink(found.amazon) || amazonLink(info.amazonUrl);
-      const flipkart = flipkartLink(q) || flipkartLink(found.flipkart) || flipkartLink(info.flipkartUrl);
+      const found = (amazonLink(link) && flipkartLink(link)) ? {} : await findStoreLinks(name);
+      const amazon = amazonLink(link) || amazonLink(found.amazon) || amazonLink(info.amazonUrl);
+      const flipkart = flipkartLink(link) || flipkartLink(found.flipkart) || flipkartLink(info.flipkartUrl);
       const extract = async (prompt, schema) => readJson((await gemini({ prompt, schema })).text); // Gemini reads Tavily's pages
       return Promise.all([flipkartReviews(flipkart, name), amazonReviews(amazon, name), tavilyReviews(name, extract), youtubeReviews(name)]);
     }).catch(() => []);
@@ -627,13 +691,13 @@ module.exports = async (req, res) => {
       t1Promise, infoPromise, extraPromise, pagesPromise,
       ...REVIEW_SEARCHES
         .filter((search) => !(process.env.TAVILY_API_KEY && search.retailers)) // Tavily reads these retailers directly
-        .map((search) => collectReviews(q, search))
+        .map((search) => collectReviews(searchText, search))
     ]);
     if (info.found === false) return res.status(404).json({ error: "Couldn’t find that product. Try the brand and model number." });
 
     // Every source, most reliable first: store collectors, Tavily pages, Gemini searches, then YouTube comments
     const bySource = extras.slice(0, 3).concat(geminiSearches, extras.slice(3));
-    if (!bySource.some((t) => t.reviews.length)) bySource.push(await collectReviews(q, BROAD_SEARCH)); // last try: any Indian site
+    if (!bySource.some((t) => t.reviews.length)) bySource.push(await collectReviews(searchText, BROAD_SEARCH)); // last try: any Indian site
 
     // Merge, dropping the same review found by two sources
     const sources = [].concat(...bySource.map((t) => t.sources || []), t1.sources);
@@ -664,7 +728,7 @@ module.exports = async (req, res) => {
       return res.status(404).json({ error: "Only " + raw.length + " usable reviews were found (" + found.length + " collected, " + sources.length + " search sources). Details: " + report + ". Try a more specific or more popular product." });
     }
 
-    const productName = [info.brand, info.name].filter(Boolean).join(" ") || q;
+    const productName = [info.brand, info.name].filter(Boolean).join(" ") || searchText;
 
     // Task 3
     const tags = await tagReviews(productName, raw);
