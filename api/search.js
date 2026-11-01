@@ -272,7 +272,7 @@ function tagSchema(themeIds, situationLabels) {
       reviews: { type: "array", items: { type: "object", properties: {
         id: { type: "string" },
         sentiment: { type: "string", enum: ["positive", "mixed", "negative"] },
-        offTopic: { type: "boolean", description: "true if it isn't about owning or using this product, e.g. a question or a comment about the video" },
+        offTopic: { type: "boolean", description: "true unless the writer has actually used this product and describes that experience. True for questions, comments about a video or its creator, comments about other models, and posts from people who have only ordered it, are waiting for delivery, or are planning to buy" },
         suspicious: { type: "boolean", description: "true if it reads like an ad, a fake, or a paid review" },
         situations: { type: "array", items: { type: "string", enum: situationLabels.length ? situationLabels : ["none"] } },
         mentions: { type: "array", items: { type: "object", properties: {
@@ -292,7 +292,7 @@ function tagPrompt(product, themes, situations, batch) {
 Themes (use these ids only): ${themes.map((t) => t.id + " = " + t.title).join("; ")}
 Situations (use these labels only): ${situations.map((x) => x.label).join("; ") || "none"}
 For each review, list the themes it mentions, its stance on each, and copy the exact sentences that mention the theme, character for character.
-Mark reviews that are off-topic or look fake. A review can mention no themes.
+Mark reviews that are off-topic or look fake. A review is off-topic unless the writer has used the product, so "just ordered it, can't wait" is off-topic. A review can mention no themes.
 Reviews:
 ${batch.map((r) => r.id + " [" + r.site + ", " + (r.rating || "no") + " stars]: " + r.text).join("\n")}`;
 }
@@ -328,7 +328,7 @@ const INSIGHT_SCHEMA = {
       id: { type: "string" },
       summary: { type: "string", description: "one sentence on what reviewers say" },
       goodToKnow: { type: "string", description: "a useful caveat, or empty" },
-      whatReviewersDid: { type: "string", description: "fixes or workarounds owners mention, citing review ids like (R4), or empty" },
+      whatReviewersDid: { type: "string", description: "fixes or workarounds owners mention, or empty" },
       howToAvoid: { type: "string", description: "practical advice drawn from the reviews, or empty" },
       whenItShowsUp: { type: "string", description: "e.g. After about 6 months, or empty" }
     }, required: ["id", "summary", "goodToKnow", "whatReviewersDid", "howToAvoid", "whenItShowsUp"] } },
@@ -361,7 +361,7 @@ ${lines}
 Situations: ${situations.map((s) => s.label).join(", ")}
 Reviews:
 ${reviews.map((r) => r.id + " [" + r.site + ", " + (r.rating || "no") + " stars, " + (r.date || "undated") + "]: " + r.text).join("\n")}
-Write short, plain sentences. Only say what the reviews support, and cite review ids like (R3) for specific claims.`;
+Write short, plain sentences. Only say what the reviews support. Don't mention review ids (like R3) in anything you write.`;
 }
 
 /* ------------------------------------------------------------------ */
@@ -423,7 +423,7 @@ function finish(q, info, ins, reviews, byId, panels, themes, tags, suspicious, o
 
   const quotesFor = (id, label) => {
     const g = panels[id].groups.find((x) => x.label === label);
-    return (g ? g.ids : []).slice(0, 2).map((rid) => ({ text: byId[rid].hl[id][0], ref: rid + ", " + byId[rid].site }));
+    return (g ? g.ids : []).slice(0, 2).map((rid) => ({ text: byId[rid].hl[id][0], ref: byId[rid].site }));
   };
 
   const likes = [], concerns = [];
