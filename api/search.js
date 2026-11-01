@@ -13,6 +13,7 @@
 // Extra review sources, each switched on by its own key in Vercel (skipped when the key isn't set):
 //   YOUTUBE_API_KEY  owner comments on Indian review videos (free, see _youtube.js)
 //   APIFY_TOKEN      Flipkart and Amazon.in reviews from store collectors (free credit, see _apify.js)
+//   TAVILY_API_KEY   Croma, Reliance Digital, Tata CLiQ and Vijay Sales only (free, see _tavily.js)
 //
 // Needs one environment variable in Vercel: GEMINI_API_KEY
 // Google Search needs billing turned on in Google AI Studio (it isn't in the free tier).
@@ -22,6 +23,7 @@
 const SAMPLE = require("./_sample.json");
 const { youtubeReviews, isHindi } = require("./_youtube.js");
 const { flipkartReviews, amazonReviews, amazonLink, flipkartLink } = require("./_apify.js");
+const { tavilyReviews } = require("./_tavily.js");
 
 const MODEL = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
 const API = "https://generativelanguage.googleapis.com/v1beta/models/";
@@ -183,8 +185,8 @@ Only include facts and links you found in search results; never make up a link. 
 const REVIEW_SEARCHES = [
   { label: "Amazon", focus: "Amazon India (amazon.in) customer reviews", queries: (q) => [`"${q}" reviews site:amazon.in`, `${q} amazon.in customer review`] },
   { label: "Flipkart", focus: "Flipkart (flipkart.com) customer reviews and ratings", queries: (q) => [`"${q}" reviews site:flipkart.com`, `${q} flipkart ratings and reviews`] },
-  { label: "Croma and Reliance Digital", focus: "customer reviews on Croma (croma.com) and Reliance Digital (reliancedigital.in)", queries: (q) => [`${q} reviews site:croma.com`, `${q} reviews site:reliancedigital.in`] },
-  { label: "Other stores", focus: "customer reviews on Vijay Sales, Tata CLiQ, JioMart and the brand's Indian website", queries: (q) => [`${q} customer reviews vijay sales`, `${q} reviews tata cliq`, `${q} reviews ratings india`] },
+  { label: "Croma and Reliance Digital", retailers: true, focus: "customer reviews on Croma (croma.com) and Reliance Digital (reliancedigital.in)", queries: (q) => [`${q} reviews site:croma.com`, `${q} reviews site:reliancedigital.in`] },
+  { label: "Other stores", retailers: true, focus: "customer reviews on Vijay Sales, Tata CLiQ, JioMart and the brand's Indian website", queries: (q) => [`${q} customer reviews vijay sales`, `${q} reviews tata cliq`, `${q} reviews ratings india`] },
   { label: "Indian tech sites", focus: "user reviews and owner comments on Indian tech sites such as 91mobiles, Smartprix, MySmartPrice and Gadgets 360 (user reviews only, not the editors' reviews)", queries: (q) => [`${q} user reviews 91mobiles`, `${q} user reviews smartprix`, `${q} owner review india`] },
   { label: "Forums", focus: "Reddit threads, Quora answers and Indian forums where owners in India describe their experience, including delivery, installation, after-sales service and long-term use", queries: (q) => [`${q} reddit india owner experience`, `${q} quora experience`, `${q} review after months india`] }
 ];
@@ -542,16 +544,19 @@ module.exports = async (req, res) => {
       const name = [info.brand, info.name].filter(Boolean).join(" ") || q;
       const amazon = amazonLink(q) || amazonLink(info.amazonUrl);       // a pasted link wins over a found one
       const flipkart = flipkartLink(q) || flipkartLink(info.flipkartUrl);
-      return Promise.all([flipkartReviews(flipkart, name), amazonReviews(amazon, name), youtubeReviews(name)]);
+      const extract = async (prompt, schema) => readJson((await gemini({ prompt, schema })).text); // Gemini reads Tavily's pages
+      return Promise.all([flipkartReviews(flipkart, name), amazonReviews(amazon, name), tavilyReviews(name, extract), youtubeReviews(name)]);
     }).catch(() => []);
     const [t1, info, extras, ...geminiSearches] = await Promise.all([
       t1Promise, infoPromise, extraPromise,
-      ...REVIEW_SEARCHES.map((search) => collectReviews(q, search))
+      ...REVIEW_SEARCHES
+        .filter((search) => !(process.env.TAVILY_API_KEY && search.retailers)) // Tavily reads these retailers directly
+        .map((search) => collectReviews(q, search))
     ]);
     if (info.found === false) return res.status(404).json({ error: "Couldn’t find that product. Try the brand and model number." });
 
-    // Every source, most reliable first: store collectors, Gemini searches, then YouTube comments
-    const bySource = extras.slice(0, 2).concat(geminiSearches, extras.slice(2));
+    // Every source, most reliable first: store collectors, Tavily pages, Gemini searches, then YouTube comments
+    const bySource = extras.slice(0, 3).concat(geminiSearches, extras.slice(3));
     if (!bySource.some((t) => t.reviews.length)) bySource.push(await collectReviews(q, BROAD_SEARCH)); // last try: any Indian site
 
     // Merge, dropping the same review found by two sources
