@@ -59,8 +59,9 @@ async function cacheSet(key, value) {
   await kv(["SET", "reviewwise:" + key, JSON.stringify(value), "EX", String(KEEP_DAYS * 86400)]);
 }
 // Same product, any wording: "Sony BRAVIA 7 II 75" and "sony bravia 7ii 75 inch" share one key
-const productKey = (info) => "product:" + [info.brand, info.name].filter(Boolean).join(" ").toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 100);
-const queryKey = (q) => "query:" + q.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 200);
+const CACHE_VERSION = "v2"; // raise this when a fix should replace results saved earlier
+const productKey = (info) => CACHE_VERSION + ":product:" + [info.brand, info.name, info.variant || info.modelNumber].filter(Boolean).join(" ").toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 100);
+const queryKey = (q) => CACHE_VERSION + ":query:" + q.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 200);
 
 /* ------------------------------------------------------------------ */
 /* Talking to Gemini                                                   */
@@ -260,13 +261,15 @@ function task1Prompt(q, link) {
 The words in the link suggest the product is: "${q}".`
     : `The shopper searched for: "${q}".`;
   return `You are researching a product for a shopper in India. ${asked}
-You must use Google Search before answering; don't answer from memory. Identify the exact product as sold in India, then find its official product page on the manufacturer's Indian website (for example sony.co.in, samsung.com/in or lg.com/in), the manufacturer warranty offered in India, and 3 close competitors that are sold in India.
+You must use Google Search before answering; don't answer from memory. Identify the exact product as sold in India, keeping the exact size or variant the shopper asked for (for example 65-inch, not another size), then find its official product page on the manufacturer's Indian website (for example sony.co.in, samsung.com/in or lg.com/in), the manufacturer warranty offered in India, and 3 close competitors that are sold in India.
 Reply with only this JSON object, no other text:
 {
  "found": true or false,
  "brand": "manufacturer name",
  "name": "model name without the brand",
  "category": "short category, e.g. OLED TV",
+ "variant": "the exact size or variant the shopper asked for, e.g. 65-inch, 256 GB, 8 kg, 1.5 ton, or empty",
+ "modelNumber": "the Indian model number for that exact variant, e.g. QA65S90HAELXL, or empty",
  "kind": "the closest of these product kinds: ${PRODUCT_KINDS.join(", ")}",
  "description": "one short line, e.g. 65-inch 4K OLED TV, 2025 model, Indian model number if different",
  "priceInr": "typical current selling price in India in rupees, as a plain number, or 0 if unsure",
@@ -706,11 +709,13 @@ module.exports = async (req, res) => {
     // Exact product pages for this product and its competitors, looked up while reviews are collected
     const pagesPromise = infoPromise.then(async (info) => {
       info.competitors = (info.competitors || []).slice(0, 3).filter((c) => c && c.name);
-      const items = [{ brand: info.brand, words: [info.brand, info.name].filter(Boolean).join(" ") }]
-        .concat(info.competitors.map((c) => ({ brand: c.brand, words: [c.brand, c.name, c.model].filter(Boolean).join(" ") })));
+      // The exact variant: what Task 1 found, plus the shopper's own words (which often say the size)
+      const mainVariant = [info.variant, info.modelNumber, link ? "" : q].filter(Boolean).join(", ");
+      const items = [{ brand: info.brand, words: [info.brand, info.name].filter(Boolean).join(" "), variant: mainVariant }]
+        .concat(info.competitors.map((c) => ({ brand: c.brand, words: [c.brand, c.name].filter(Boolean).join(" "), variant: c.model || "" })));
       const readPage = async (prompt, schema) => readJson((await gemini({ prompt, schema })).text); // Gemini reads a page
-      const pages = await Promise.all(items.map((it) => findProductPage(it.brand, it.words).catch(() => null)));
-      const prices = await Promise.all(items.map((it, k) => findPrice(pages[k], it.words, readPage).catch(() => null)));
+      const pages = await Promise.all(items.map((it) => findProductPage(it.brand, it.words, it.variant).catch(() => null)));
+      const prices = await Promise.all(items.map((it, k) => findPrice(pages[k], it.words, readPage, it.variant).catch(() => null)));
       info.officialPage = pages[0] && pages[0].url;
       info.competitorPages = pages.slice(1).map((pg) => pg && pg.url);
       info.officialPrice = prices[0];
