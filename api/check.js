@@ -111,6 +111,18 @@ module.exports = async (req, res) => {
     } catch (err) { say(false, "7. Couldn't reach Tavily", String(err.message || err)); }
   }
 
-  lines.push("", "If lines 1 to 4 say PASS, run a search on the main page. Lines 5 to 7 are optional.");
+  const kvUrl = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
+  const kvToken = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
+  if (!kvUrl || !kvToken) {
+    lines.push("SKIP  8. Saved results: no Upstash Redis database is connected, so each search runs fresh and results can differ.");
+  } else {
+    try {
+      const r = await fetch(kvUrl, { method: "POST", headers: { Authorization: "Bearer " + kvToken, "Content-Type": "application/json" }, body: JSON.stringify(["PING"]) });
+      const d = await r.json().catch(() => ({}));
+      say(r.ok && d.result === "PONG", "8. Saved results (Upstash Redis)", r.ok ? "Connected. Results are kept for 7 days." : "HTTP " + r.status + ": " + (d.error || "couldn't connect"));
+    } catch (err) { say(false, "8. Couldn't reach the saved-results database", String(err.message || err)); }
+  }
+
+  lines.push("", "If lines 1 to 4 say PASS, run a search on the main page. Lines 5 to 8 are optional.");
   res.status(200).send(lines.join("\n"));
 };
