@@ -622,7 +622,7 @@ function accItem(item, first) {
   const total = panelTotal(item.panel);
   return "<li>" +
     '<button type="button" class="acc-btn" data-acc="' + esc(item.id) + '" aria-expanded="' + open + '" aria-controls="acc-' + esc(item.id) + '">' +
-      '<span class="t"><span class="name">' + esc(item.title) + '</span><span class="meta"><span class="count ' + esc(item.tone) + '">' + item.count + " of " + item.of + " " + esc(item.tone) + "</span>" +
+      '<span class="t"><span class="name">' + esc(item.title) + '</span><span class="meta"><span class="count ' + esc(item.tone) + '">' + item.of + (item.of === 1 ? " review mentions this · " : " reviews mention this · ") + item.count + " " + esc(item.tone) + "</span>" +
       (item.later ? '<span class="later">Shows up later</span>' : "") + "</span></span>" + ICON_CHEV +
     "</button>" +
     (open ? '<div class="acc-body" id="acc-' + esc(item.id) + '">' +
