@@ -23,7 +23,7 @@
 const SAMPLE = require("./_sample.json");
 const { youtubeReviews, isHindi } = require("./_youtube.js");
 const { flipkartReviews, amazonReviews, amazonLink, flipkartLink } = require("./_apify.js");
-const { tavilyReviews } = require("./_tavily.js");
+const { tavilyReviews, findStoreLinks } = require("./_tavily.js");
 
 const MODEL = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
 const API = "https://generativelanguage.googleapis.com/v1beta/models/";
@@ -80,6 +80,11 @@ async function gemini({ prompt, search = false, readPages = false, schema = null
   return { text, sources, queries, finishReason: cand.finishReason || (data.promptFeedback && data.promptFeedback.blockReason) || "" };
 }
 
+// Reviews from stores outside India are left out. YouTube and Reddit are global, so they stay.
+const ABROAD_URL = /(\bamazon\.(com|co\.uk|ca|de|com\.au)(\/|$)|bestbuy\.|walmart\.|target\.com|costco\.com|crutchfield\.|abt\.com|bhphotovideo\.|newegg\.|currys\.|argos\.|samsung\.com\/(us|uk|ca|au)\/|lg\.com\/(us|uk|ca|au)\/|electronics\.sony\.com|sony\.com\/en\/|apple\.com\/(?!in\/)[a-z]{2}\/)/i;
+const ABROAD_SITE = /\b(US|USA|UK|U\.S\.|Canada|Australia|Best ?Buy|Walmart|Target|Costco|Crutchfield)\b/;
+const fromAbroad = (r) => ABROAD_URL.test(String(r.url || "")) || ABROAD_SITE.test(String(r.site || ""));
+
 // Search-grounded answers can't be forced into a schema, so read the JSON out of the text.
 function readJson(text) {
   const clean = String(text || "").replace(/```json|```/g, "");
@@ -92,6 +97,7 @@ function readJson(text) {
 /* Checking sources                                                    */
 /* ------------------------------------------------------------------ */
 
+const plural = (n, w) => n + " " + w + (n === 1 ? "" : "s");
 const hostOf = (url) => { try { return new URL(url).hostname.replace(/^www\./, "").toLowerCase(); } catch (e) { return ""; } };
 
 // Google Search grounding returns sources as { uri, title }, where title is usually the site's domain
@@ -183,14 +189,14 @@ Only include facts and links you found in search results; never make up a link. 
 
 // Each Task 2 search looks at a different kind of source, so together they cover more ground.
 const REVIEW_SEARCHES = [
-  { label: "Amazon", focus: "Amazon India (amazon.in) customer reviews", queries: (q) => [`"${q}" reviews site:amazon.in`, `${q} amazon.in customer review`] },
-  { label: "Flipkart", focus: "Flipkart (flipkart.com) customer reviews and ratings", queries: (q) => [`"${q}" reviews site:flipkart.com`, `${q} flipkart ratings and reviews`] },
-  { label: "Croma and Reliance Digital", retailers: true, focus: "customer reviews on Croma (croma.com) and Reliance Digital (reliancedigital.in)", queries: (q) => [`${q} reviews site:croma.com`, `${q} reviews site:reliancedigital.in`] },
-  { label: "Other stores", retailers: true, focus: "customer reviews on Vijay Sales, Tata CLiQ, JioMart and the brand's Indian website", queries: (q) => [`${q} customer reviews vijay sales`, `${q} reviews tata cliq`, `${q} reviews ratings india`] },
-  { label: "Indian tech sites", focus: "user reviews and owner comments on Indian tech sites such as 91mobiles, Smartprix, MySmartPrice and Gadgets 360 (user reviews only, not the editors' reviews)", queries: (q) => [`${q} user reviews 91mobiles`, `${q} user reviews smartprix`, `${q} owner review india`] },
-  { label: "Forums", focus: "Reddit threads, Quora answers and Indian forums where owners in India describe their experience, including delivery, installation, after-sales service and long-term use", queries: (q) => [`${q} reddit india owner experience`, `${q} quora experience`, `${q} review after months india`] }
+  { label: "Google search: Amazon", focus: "Amazon India (amazon.in) customer reviews", queries: (q) => [`"${q}" reviews site:amazon.in`, `${q} amazon.in customer review`] },
+  { label: "Google search: Flipkart", focus: "Flipkart (flipkart.com) customer reviews and ratings", queries: (q) => [`"${q}" reviews site:flipkart.com`, `${q} flipkart ratings and reviews`] },
+  { label: "Google search: Croma and Reliance Digital", retailers: true, focus: "customer reviews on Croma (croma.com) and Reliance Digital (reliancedigital.in)", queries: (q) => [`${q} reviews site:croma.com`, `${q} reviews site:reliancedigital.in`] },
+  { label: "Google search: Other stores", retailers: true, focus: "customer reviews on Vijay Sales, Tata CLiQ, JioMart and the brand's Indian website", queries: (q) => [`${q} customer reviews vijay sales`, `${q} reviews tata cliq`, `${q} reviews ratings india`] },
+  { label: "Google search: Indian tech sites", focus: "user reviews and owner comments on Indian tech sites such as 91mobiles, Smartprix, MySmartPrice and Gadgets 360 (user reviews only, not the editors' reviews)", queries: (q) => [`${q} user reviews 91mobiles`, `${q} user reviews smartprix`, `${q} owner review india`] },
+  { label: "Google search: Forums", focus: "Reddit threads, Quora answers and Indian forums where owners in India describe their experience, including delivery, installation, after-sales service and long-term use", queries: (q) => [`${q} reddit india owner experience`, `${q} quora experience`, `${q} review after months india`] }
 ];
-const BROAD_SEARCH = { label: "Any Indian site", focus: "owner reviews from buyers in India on any website", queries: (q) => [`${q} review india`, `${q} owner review`, `${q} user reviews`] };
+const BROAD_SEARCH = { label: "Google search: Any Indian site", focus: "owner reviews from buyers in India on any website", queries: (q) => [`${q} review india`, `${q} owner review`, `${q} user reviews`] };
 
 function task2Prompt(q, search, summarise) {
   const how = summarise
@@ -540,10 +546,12 @@ module.exports = async (req, res) => {
     // start as soon as Task 1 has named the product and found its store links.
     const t1Promise = step("Task 1 (identifying the product)", () => gemini({ prompt: task1Prompt(q), search: true }));
     const infoPromise = t1Promise.then((t1) => step("Task 1 (reading the product details)", async () => readJson(t1.text)));
-    const extraPromise = infoPromise.then((info) => {
+    const extraPromise = infoPromise.then(async (info) => {
       const name = [info.brand, info.name].filter(Boolean).join(" ") || q;
-      const amazon = amazonLink(q) || amazonLink(info.amazonUrl);       // a pasted link wins over a found one
-      const flipkart = flipkartLink(q) || flipkartLink(info.flipkartUrl);
+      // Store links: a pasted link first, then one Tavily found, then one from Gemini's search
+      const found = (amazonLink(q) && flipkartLink(q)) ? {} : await findStoreLinks(name);
+      const amazon = amazonLink(q) || amazonLink(found.amazon) || amazonLink(info.amazonUrl);
+      const flipkart = flipkartLink(q) || flipkartLink(found.flipkart) || flipkartLink(info.flipkartUrl);
       const extract = async (prompt, schema) => readJson((await gemini({ prompt, schema })).text); // Gemini reads Tavily's pages
       return Promise.all([flipkartReviews(flipkart, name), amazonReviews(amazon, name), tavilyReviews(name, extract), youtubeReviews(name)]);
     }).catch(() => []);
@@ -565,12 +573,12 @@ module.exports = async (req, res) => {
     const seen = [];
     const found = [];
     bySource.forEach((t) => t.reviews.forEach((r) => {
-      if (!r || typeof r.text !== "string" || isHindi(r.text)) return; // English reviews only
+      if (!r || typeof r.text !== "string" || isHindi(r.text) || fromAbroad(r)) return; // English reviews from India only
       const key = r.text.toLowerCase().replace(/[^a-z0-9]/g, "");
       if (key.length < 20) return;
       if (seen.some((k) => k.includes(key.slice(0, 60)) || key.includes(k.slice(0, 60)))) return;
       seen.push(key);
-      found.push(r);
+      found.push(Object.assign({}, r, { from: t.label })); // remember which source it came from
     }));
     const report = "Task 1 ran " + t1.queries.length + " searches | " +
       bySource.filter((t) => !t.skipped).map((t) => t.label + ": " + (t.problem || t.reviews.length + " reviews")).join(" | ");
@@ -582,7 +590,7 @@ module.exports = async (req, res) => {
       .map((r, i) => ({
         id: "R" + (i + 1), site: String(r.site || hostOf(r.url) || "Web").trim(), url: r.url,
         rating: Math.max(0, Math.min(5, Math.round(Number(r.rating) || 0))),
-        date: /^\d{4}-\d{2}(-\d{2})?$/.test(r.date || "") ? r.date : "", verified: r.verified === true, summarised: r.summarised === true, sourceKind: r.sourceKind || "", text: r.text.trim().slice(0, 1200)
+        date: /^\d{4}-\d{2}(-\d{2})?$/.test(r.date || "") ? r.date : "", verified: r.verified === true, summarised: r.summarised === true, sourceKind: r.sourceKind || "", from: r.from, text: r.text.trim().slice(0, 1200)
       }));
     if (raw.length < 3) {
       return res.status(404).json({ error: "Only " + raw.length + " usable reviews were found (" + found.length + " collected, " + sources.length + " search sources). Details: " + report + ". Try a more specific or more popular product." });
@@ -597,6 +605,15 @@ module.exports = async (req, res) => {
     // Task 4
     const t4 = await step("Task 4 (writing insights)", () => gemini({ prompt: task4Prompt(productName, b.themes, b.panels, b.reviews, tags.situations || []), schema: INSIGHT_SCHEMA }));
     const result = await step("Task 4 (building the page)", async () => b.finish(readJson(t4.text)));
+    // How each source did, shown under "How these reviews were collected"
+    // Counts only reviews that made it onto the page (after removing duplicates, Hindi, other countries and off-topic posts)
+    const used = {};
+    b.reviews.forEach((r) => { used[r.from] = (used[r.from] || 0) + 1; });
+    const plain = (p) => /searches run|answer|RECITATION/.test(p || "") ? "no reviews found" : (p || "no reviews found");
+    result.collection = bySource.map((t) => ({
+      source: t.label,
+      status: t.skipped ? "not connected" : used[t.label] ? plural(used[t.label], "review") + " used" : t.reviews.length ? "found " + plural(t.reviews.length, "review") + ", none usable" : plain(t.problem)
+    }));
 
     cache.set(key, result);
     res.status(200).json(result);
