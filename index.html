@@ -211,7 +211,15 @@
   .chips { display: flex; gap: 8px; flex-wrap: wrap; }
   .chip { font-size: 13px; font-weight: 600; border-radius: 999px; padding: 0 14px; min-height: 36px; cursor: pointer; background: var(--white); color: var(--ink); border: 1px solid var(--line-strong); }
   .chip[aria-pressed="true"] { background: var(--navy); color: #FFFFFF; border-color: var(--navy); }
-  .filters { display: flex; flex-direction: column; gap: 10px; }
+  .filters { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px 16px; }
+  .filter { display: flex; flex-direction: column; gap: 6px; flex: 0 1 240px; min-width: 160px; }
+  .filter span { font-size: 12.5px; font-weight: 600; color: var(--body); }
+  .filter select { appearance: none; -webkit-appearance: none; width: 100%; min-height: 44px; padding: 0 40px 0 14px; font-size: 14.5px; color: var(--ink);
+    background: var(--white) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%235B6472' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") no-repeat right 14px center;
+    border: 1px solid var(--line-strong); border-radius: 8px; cursor: pointer; }
+  .filter select:focus-visible { outline: 2px solid var(--navy); outline-offset: 2px; }
+  .filter select.on { border-color: var(--navy); box-shadow: inset 0 0 0 1px var(--navy); }
+  .filter-clear { align-self: center; margin: 0; }
   .strip-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
   .strip-head > span { font-size: 13px; color: var(--muted); }
   .arrows { display: flex; gap: 8px; }
@@ -458,8 +466,9 @@
           <div id="answer"></div>
 
           <div class="filters">
-            <div class="chips" role="group" aria-label="Filter by sentiment" id="sent-chips"></div>
-            <div class="chips" role="group" aria-label="Filter by store" id="store-chips"></div>
+            <label class="filter"><span>Sentiment</span><select id="f-sent"></select></label>
+            <label class="filter"><span>Source</span><select id="f-store"></select></label>
+            <button type="button" class="link-btn filter-clear" id="f-clear" hidden>Clear filters</button>
           </div>
 
           <div class="strip-head">
@@ -908,19 +917,27 @@ function renderAllReviews() {
     '<p class="small">ReviewWise doesn’t make buying calls. It shows what owners in a similar situation report, and the reviews below are filtered to match.</p></div>';
 
   const base = A.searching ? reviews.filter(A.matches) : reviews;
-  const counts = { all: base.length };
-  const sites = [];
-  base.forEach((r) => {
-    const s = A.sentOf(r); counts[s] = (counts[s] || 0) + 1;
-    counts["s:" + r.site] = (counts["s:" + r.site] || 0) + 1;
-    if (sites.indexOf(r.site) < 0) sites.push(r.site);
-  });
+  // Each dropdown's counts reflect the other dropdown's choice, so they always add up
+  const bySent = (r) => S.sent === "all" || A.sentOf(r) === S.sent;
+  const byStore = (r) => S.store === "all" || r.site === S.store;
+  const forSent = base.filter(byStore);   // counts shown in the Sentiment list
+  const forStore = base.filter(bySent);   // counts shown in the Source list
+  const sentCount = { all: forSent.length };
+  forSent.forEach((r) => { const k = A.sentOf(r); sentCount[k] = (sentCount[k] || 0) + 1; });
+  const storeCount = {};
+  base.forEach((r) => { storeCount[r.site] = storeCount[r.site] || 0; });
+  forStore.forEach((r) => { storeCount[r.site] += 1; });
+  const sites = Object.keys(storeCount).sort((a, b) => (storeCount[b] - storeCount[a]) || a.localeCompare(b));
 
-  $("sent-chips").innerHTML = [["all", "All"], ["positive", "Positive"], ["mixed", "Mixed"], ["negative", "Negative"]]
-    .filter(([k]) => k === "all" || counts[k])
-    .map(([k, label]) => '<button type="button" class="chip" data-sent="' + k + '" aria-pressed="' + (S.sent === k) + '">' + label + " (" + (counts[k] || 0) + ")</button>").join("");
-  $("store-chips").innerHTML = '<button type="button" class="chip" data-store="all" aria-pressed="' + (S.store === "all") + '">All stores (' + counts.all + ")</button>" +
-    sites.map((s) => '<button type="button" class="chip" data-store="' + esc(s) + '" aria-pressed="' + (S.store === s) + '">' + esc(s) + " (" + counts["s:" + s] + ")</button>").join("");
+  const option = (value, label, n, current) =>
+    '<option value="' + esc(value) + '"' + (value === current ? " selected" : "") + (n === 0 && value !== current ? " disabled" : "") + ">" + esc(label) + " (" + n + ")</option>";
+  $("f-sent").innerHTML = [["all", "All sentiments"], ["positive", "Positive"], ["mixed", "Mixed"], ["negative", "Negative"]]
+    .map(([k, label]) => option(k, label, k === "all" ? sentCount.all : (sentCount[k] || 0), S.sent)).join("");
+  $("f-store").innerHTML = option("all", "All sources", forStore.length, S.store) +
+    sites.map((site) => option(site, site, storeCount[site], S.store)).join("");
+  $("f-sent").classList.toggle("on", S.sent !== "all");
+  $("f-store").classList.toggle("on", S.store !== "all");
+  $("f-clear").hidden = S.sent === "all" && S.store === "all";
 
   const list = base.filter((r) => (S.sent === "all" || A.sentOf(r) === S.sent) && (S.store === "all" || r.site === S.store))
     .slice().sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
@@ -996,6 +1013,10 @@ document.addEventListener("click", (e) => {
     $(t.dataset.scroll).scrollBy({ left: 336 * Number(t.dataset.dir), behavior: "smooth" });
   }
 });
+
+$("f-sent").addEventListener("change", (e) => { S.sent = e.target.value; renderAllReviews(); });
+$("f-store").addEventListener("change", (e) => { S.store = e.target.value; renderAllReviews(); });
+$("f-clear").addEventListener("click", () => { S.sent = "all"; S.store = "all"; renderAllReviews(); $("f-sent").focus(); });
 
 $("ask-form").addEventListener("submit", (e) => {
   e.preventDefault();
