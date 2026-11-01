@@ -15,6 +15,10 @@
 //   APIFY_TOKEN      Flipkart and Amazon.in reviews from store collectors (free credit, see _apify.js)
 //   TAVILY_API_KEY   Croma, Reliance Digital, Tata CLiQ and Vijay Sales only (free, see _tavily.js)
 //
+// Saved results (optional, free): connect an Upstash Redis database from Vercel's Storage tab.
+//   Results are kept for 7 days, so the same product always gives the same answer.
+//   Add ?fresh=1 to the /api/search address to force a new analysis.
+//
 // Needs one environment variable in Vercel: GEMINI_API_KEY
 // Google Search needs billing turned on in Google AI Studio (it isn't in the free tier).
 // Optional: GEMINI_MODEL (defaults to gemini-3.5-flash-lite)
@@ -30,7 +34,33 @@ const API = "https://generativelanguage.googleapis.com/v1beta/models/";
 const MAX_REVIEWS = 200;  // after merging every source
 const TAG_BATCH = 30;     // reviews tagged per Gemini call in Task 3
 const PER_SEARCH = 20;    // asked of each Task 2 search
-const cache = new Map(); // repeat searches reuse results while this server copy stays warm
+const cache = new Map(); // fastest copy, while this server copy stays warm
+
+// Saved results in Upstash Redis (Vercel adds these variables when you connect the database)
+const KV_URL = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
+const KV_TOKEN = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
+const KEEP_DAYS = 7;
+async function kv(command) {
+  if (!KV_URL || !KV_TOKEN) return null;
+  try {
+    const r = await fetch(KV_URL, { method: "POST", headers: { Authorization: "Bearer " + KV_TOKEN, "Content-Type": "application/json" }, body: JSON.stringify(command) });
+    const d = await r.json().catch(() => ({}));
+    return d.result == null ? null : d.result;
+  } catch (e) { return null; }
+}
+async function cacheGet(key) {
+  if (cache.has(key)) return cache.get(key);
+  const saved = await kv(["GET", "reviewwise:" + key]);
+  if (!saved) return null;
+  try { const o = JSON.parse(saved); cache.set(key, o); return o; } catch (e) { return null; }
+}
+async function cacheSet(key, value) {
+  cache.set(key, value);
+  await kv(["SET", "reviewwise:" + key, JSON.stringify(value), "EX", String(KEEP_DAYS * 86400)]);
+}
+// Same product, any wording: "Sony BRAVIA 7 II 75" and "sony bravia 7ii 75 inch" share one key
+const productKey = (info) => "product:" + [info.brand, info.name].filter(Boolean).join(" ").toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 100);
+const queryKey = (q) => "query:" + q.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 200);
 
 /* ------------------------------------------------------------------ */
 /* Talking to Gemini                                                   */
@@ -84,6 +114,9 @@ async function gemini({ prompt, search = false, readPages = false, schema = null
 const ABROAD_URL = /(\bamazon\.(com|co\.uk|ca|de|com\.au)(\/|$)|bestbuy\.|walmart\.|target\.com|costco\.com|crutchfield\.|abt\.com|bhphotovideo\.|newegg\.|currys\.|argos\.|samsung\.com\/(us|uk|ca|au)\/|lg\.com\/(us|uk|ca|au)\/|electronics\.sony\.com|sony\.com\/en\/|apple\.com\/(?!in\/)[a-z]{2}\/)/i;
 const ABROAD_SITE = /\b(US|USA|UK|U\.S\.|Canada|Australia|Best ?Buy|Walmart|Target|Costco|Crutchfield)\b/;
 const fromAbroad = (r) => ABROAD_URL.test(String(r.url || "")) || ABROAD_SITE.test(String(r.site || ""));
+
+// Product kinds for the page icon; Task 1 picks one (the page has a matching icon for each)
+const PRODUCT_KINDS = ["smartphone", "tablet", "laptop", "desktop computer", "monitor", "television", "projector", "headphones", "earbuds", "smartwatch or fitness band", "speaker or soundbar", "camera", "drone", "gaming console or controller", "keyboard", "mouse", "printer", "router or wifi device", "hard drive or SSD", "pen drive or memory card", "power bank", "charger or adapter", "cable", "refrigerator", "washing machine", "air conditioner", "fan or air cooler", "heater or geyser", "microwave or oven", "mixer, blender or juicer", "cookware or kitchen appliance", "coffee machine", "water purifier", "vacuum cleaner", "light or bulb", "lamp", "trimmer or grooming", "toothbrush", "weighing scale", "furniture", "bed or mattress", "clothing", "shoes", "bag or luggage", "eyewear", "jewellery", "book", "toy", "baby product", "bicycle", "car or car accessory", "fitness equipment", "musical instrument", "health product", "calculator", "solar panel", "flashlight", "other"];
 
 // Search-grounded answers can't be forced into a schema, so read the JSON out of the text.
 function readJson(text) {
@@ -177,6 +210,7 @@ Reply with only this JSON object, no other text:
  "brand": "manufacturer name",
  "name": "model name without the brand",
  "category": "short category, e.g. OLED TV",
+ "kind": "the closest of these product kinds: ${PRODUCT_KINDS.join(", ")}",
  "description": "one short line, e.g. 65-inch 4K OLED TV, 2025 model, Indian model number if different",
  "officialUrl": "URL of the official product page on the manufacturer's Indian site, or empty",
  "amazonUrl": "the product's amazon.in page, a URL containing /dp/ and the 10-character ASIN, or empty",
@@ -495,6 +529,8 @@ function finish(q, info, ins, reviews, byId, panels, themes, tags, suspicious, o
     sample: false,
     product: {
       kicker: [brand, info.category].filter(Boolean).join(" / ").toUpperCase(),
+      category: info.category || "",
+      kind: PRODUCT_KINDS.find((k) => k.toLowerCase() === String(info.kind || "").trim().toLowerCase()) || "",
       brand, name: info.name || q, description: info.description || "",
       short: [brand, info.description].filter(Boolean).join(" · "),
       url: official.url,
@@ -548,14 +584,28 @@ module.exports = async (req, res) => {
 
   if (!process.env.GEMINI_API_KEY) return res.status(200).json(Object.assign({ query: q }, SAMPLE));
 
-  const key = q.toLowerCase();
-  if (cache.has(key)) return res.status(200).json(cache.get(key));
+  const fresh = req.query && req.query.fresh === "1";
+  const qKey = queryKey(q);
+  if (!fresh) {
+    const saved = await cacheGet(qKey);
+    if (saved) return res.status(200).json(Object.assign({}, saved, { query: q }));
+  }
 
   try {
-    // Task 1 and the Gemini review searches start together. YouTube and the store collectors
-    // start as soon as Task 1 has named the product and found its store links.
-    const t1Promise = step("Task 1 (identifying the product)", () => gemini({ prompt: task1Prompt(q), search: true }));
-    const infoPromise = t1Promise.then((t1) => step("Task 1 (reading the product details)", async () => readJson(t1.text)));
+    // Task 1 first: identify the product, then reuse a saved analysis of it if there is one
+    const t1Done = await step("Task 1 (identifying the product)", () => gemini({ prompt: task1Prompt(q), search: true }));
+    const infoDone = await step("Task 1 (reading the product details)", async () => readJson(t1Done.text));
+    if (infoDone.found === false) return res.status(404).json({ error: "Couldn’t find that product. Try the brand and model number." });
+    const pKey = productKey(infoDone);
+    if (!fresh) {
+      const saved = await cacheGet(pKey);
+      if (saved) { await cacheSet(qKey, saved); return res.status(200).json(Object.assign({}, saved, { query: q })); }
+    }
+
+    // New product: collect reviews from every source. YouTube, the store collectors and the
+    // product-page lookups use what Task 1 found; the Gemini review searches run alongside them.
+    const t1Promise = Promise.resolve(t1Done);
+    const infoPromise = Promise.resolve(infoDone);
     const extraPromise = infoPromise.then(async (info) => {
       const name = [info.brand, info.name].filter(Boolean).join(" ") || q;
       // Store links: a pasted link first, then one Tavily found, then one from Gemini's search
@@ -623,7 +673,7 @@ module.exports = async (req, res) => {
     // Task 4
     const t4 = await step("Task 4 (writing insights)", () => gemini({ prompt: task4Prompt(productName, b.themes, b.panels, b.reviews, tags.situations || []), schema: INSIGHT_SCHEMA }));
     const result = await step("Task 4 (building the page)", async () => b.finish(readJson(t4.text)));
-    // How each source did, shown under "How these reviews were collected"
+    // How each source did (kept in the data for troubleshooting, not shown on the page)
     // Counts only reviews that made it onto the page (after removing duplicates, Hindi, other countries and off-topic posts)
     const used = {};
     b.reviews.forEach((r) => { used[r.from] = (used[r.from] || 0) + 1; });
@@ -633,7 +683,10 @@ module.exports = async (req, res) => {
       status: t.skipped ? "not connected" : used[t.label] ? plural(used[t.label], "review") + " used" : t.reviews.length ? "found " + plural(t.reviews.length, "review") + ", none usable" : plain(t.problem)
     }));
 
-    cache.set(key, result);
+    result.analyzedAt = new Date().toISOString().slice(0, 10);
+    result.category = infoDone.category || "";
+    // Save under this product and this wording, for 7 days
+    await Promise.all([cacheSet(pKey, result), cacheSet(qKey, result)]);
     res.status(200).json(result);
   } catch (err) {
     console.error(err);
