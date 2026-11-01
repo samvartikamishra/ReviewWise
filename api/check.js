@@ -96,6 +96,21 @@ module.exports = async (req, res) => {
     } catch (err) { say(false, "6. Couldn't reach Apify", String(err.message || err)); }
   }
 
-  lines.push("", "If lines 1 to 4 say PASS, run a search on the main page. Lines 5 and 6 are optional.");
+  if (!process.env.TAVILY_API_KEY) {
+    lines.push("SKIP  7. Croma, Reliance Digital, Tata CLiQ, Vijay Sales (Tavily): TAVILY_API_KEY isn't set, so they're switched off.");
+  } else {
+    try {
+      const r = await fetch("https://api.tavily.com/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + process.env.TAVILY_API_KEY },
+        body: JSON.stringify({ query: "Sony BRAVIA TV", search_depth: "basic", max_results: 1, include_domains: ["croma.com", "reliancedigital.in", "tatacliq.com", "vijaysales.com"] })
+      });
+      const d = await r.json().catch(() => ({}));
+      say(r.ok, "7. Croma, Reliance Digital, Tata CLiQ, Vijay Sales (Tavily)", r.ok ? "Key works (this test used 1 of 1,000 monthly credits). Found: " + ((d.results && d.results[0] && d.results[0].url) || "no page") :
+        "HTTP " + r.status + ": " + (r.status === 401 ? "the Tavily key isn't valid." : r.status === 432 ? "monthly free credits are used up." : JSON.stringify(d.detail || d).slice(0, 150)));
+    } catch (err) { say(false, "7. Couldn't reach Tavily", String(err.message || err)); }
+  }
+
+  lines.push("", "If lines 1 to 4 say PASS, run a search on the main page. Lines 5 to 7 are optional.");
   res.status(200).send(lines.join("\n"));
 };
