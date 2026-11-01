@@ -2,11 +2,11 @@
 // Finds review videos for the product, then collects comments where viewers describe owning it.
 // Needs YOUTUBE_API_KEY in Vercel.
 // Quota: each video search costs 100 units and each page of comments costs 1, out of 10,000 free a day.
-// With the defaults below, one product search uses about 225 units, so roughly 44 searches a day.
+// With the defaults below, one product search uses about 260 units, so roughly 38 searches a day.
 // Optional settings in Vercel:
 //   YOUTUBE_MAX_COMMENTS  comments kept per product search (default 100)
-//   YOUTUBE_VIDEOS        videos read (default 12)
-//   YOUTUBE_PAGES         pages of 100 comments read per video (default 2)
+//   YOUTUBE_VIDEOS        videos read (default 20)
+//   YOUTUBE_PAGES         pages of 100 comments read per video (default 3)
 //   YOUTUBE_SEARCHES      video searches run: 1 = "review", 2 adds "long term review",
 //                         3 adds "user review" (default 2)
 // Hindi and Hinglish videos and comments are left out.
@@ -14,8 +14,8 @@
 const API = "https://www.googleapis.com/youtube/v3/";
 const num = (v, d, lo, hi) => Math.max(lo, Math.min(hi, Number(v) || d));
 const KEEP = num(process.env.YOUTUBE_MAX_COMMENTS, 100, 1, 300);
-const VIDEOS = num(process.env.YOUTUBE_VIDEOS, 12, 1, 25);
-const PAGES = num(process.env.YOUTUBE_PAGES, 2, 1, 5);
+const VIDEOS = num(process.env.YOUTUBE_VIDEOS, 20, 1, 25);
+const PAGES = num(process.env.YOUTUBE_PAGES, 3, 1, 5);
 const SEARCHES = num(process.env.YOUTUBE_SEARCHES, 2, 1, 3);
 const QUERIES = [" review", " long term review", " user review"];
 
