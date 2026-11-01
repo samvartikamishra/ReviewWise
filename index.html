@@ -99,6 +99,12 @@
   .kicker { margin: 0; font-size: 12.5px; font-weight: 500; letter-spacing: 0.03em; color: var(--body); }
   .product h1 { margin: 0; font-size: 44px; line-height: 1.05; letter-spacing: -0.02em; font-weight: 700; }
   .product .desc { margin: 0; font-size: 16px; color: var(--muted); }
+  .price, .cprice { margin: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; color: var(--body); }
+  .price b { font-size: 24px; font-weight: 700; color: var(--ink); letter-spacing: -0.01em; }
+  .cprice b { font-size: 18px; font-weight: 700; color: var(--ink); }
+  .price s, .cprice s { font-size: 13px; color: var(--muted); }
+  .price span, .cprice span { font-size: 13px; color: var(--muted); }
+  .price a, .cprice a { color: var(--navy); font-weight: 600; text-underline-offset: 3px; }
   .ext-link { display: inline-flex; align-items: center; gap: 8px; align-self: flex-start; font-size: 15px; font-weight: 600; text-underline-offset: 4px; min-height: 44px; }
 
   .card { background: var(--white); border: 1px solid var(--line); border-radius: 12px; padding: 28px; display: flex; flex-direction: column; gap: 20px; }
@@ -504,6 +510,18 @@
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const plural = (n, word) => n + " " + word + (n === 1 ? "" : "s");
+// "54990" -> "₹54,990"; Indian grouping, so 154990 -> "₹1,54,990"
+const rupees = (n) => "₹" + Math.round(n).toLocaleString("en-IN");
+// The price line: a checked price with where and when, or a clearly labelled estimate
+function priceLine(pr, cls, withDate) {
+  if (!pr || !pr.amount) return "";
+  if (pr.estimate) return '<p class="' + cls + '"><b>About ' + rupees(pr.amount) + '</b><span>web estimate, check the store for today’s price</span></p>';
+  return '<p class="' + cls + '"><b>' + rupees(pr.amount) + "</b>" +
+    (pr.mrp ? '<s>MRP ' + rupees(pr.mrp) + "</s>" : "") +
+    "<span>at " + (pr.url ? '<a href="' + esc(pr.url) + '" target="_blank" rel="noopener">' + esc(pr.where) + "</a>" : esc(pr.where)) +
+    (withDate && pr.checked ? " · checked " + dateLabel(pr.checked) : "") + "</span></p>";
+}
+
 // Remove internal review ids from text people read: "(R42)", "(R3, R13)", "R25, YouTube" -> "YouTube"
 const noIds = (t) => String(t == null ? "" : t)
   .replace(/\s*\((?:R\d+(?:\s*(?:,|and|&)\s*)?)+\)/g, "")
@@ -678,6 +696,7 @@ function renderAll() {
     (p.kicker ? '<p class="kicker">' + esc(p.kicker) + "</p>" : "") +
     '<h1 id="pname">' + esc(p.name) + "</h1>" +
     (p.description ? '<p class="desc">' + esc(p.description) + "</p>" : "") +
+    priceLine(p.price, "price", true) +
     (p.url ? '<a class="ext-link" href="' + esc(p.url) + '" target="_blank" rel="noopener">' + esc(p.urlLabel || "Official product listing") + ICON_OUT + "</a>" : "");
 
   const sm = D.summary || {};
@@ -757,6 +776,7 @@ function renderCompetitors() {
   $("comp-section").hidden = !list.length;
   $("comp-list").innerHTML = list.map((c) =>
     '<article class="comp"><p class="kicker">' + esc(c.brand) + "</p><h3>" + esc(c.name) + '</h3><p class="model">' + esc(c.model) + "</p>" +
+    priceLine(c.price, "cprice", false) +
     '<div class="tags">' + (c.tags || []).map((t) => "<span>" + esc(t) + "</span>").join("") + "</div>" +
     (c.url ? '<a href="' + esc(c.url) + '" target="_blank" rel="noopener">' + esc(c.site || "Official site") + ICON_OUT + "</a>" : "") + "</article>").join("");
   $("comp-note").textContent = D.competitorsNote || "";
