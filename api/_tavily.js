@@ -130,6 +130,43 @@ async function findStoreLinks(productName) {
   return { amazon, flipkart };
 }
 
+/* ---------- Variants: screen size, storage, capacity ---------- */
+
+// Common TV and monitor sizes, used to read sizes from model codes like QA65S90H or OLED65C5
+const SCREEN_SIZES = new Set([24, 27, 32, 40, 42, 43, 48, 50, 55, 58, 60, 65, 70, 75, 77, 83, 85, 86, 98, 100]);
+
+// Every variant mentioned in a piece of text, by kind
+function variantsIn(text) {
+  const t = String(text || "").toLowerCase();
+  const out = { inch: new Set(), gb: new Set(), kg: new Set(), ton: new Set(), litre: new Set() };
+  for (const m of t.matchAll(/(\d{2,3})(?:\.\d)?\s*(?:-\s*)?(?:inch(?:es)?|in\b|"|”|'')/g)) out.inch.add(Number(m[1]));
+  for (const m of t.matchAll(/(\d{2,3}(?:\.\d+)?)\s*cm\b/g)) out.inch.add(Math.round(Number(m[1]) / 2.54));
+  for (const m of t.matchAll(/(?:^|[^a-z0-9])([a-z]{0,5}-?)(\d{2,3})(?=[a-z])([a-z0-9-]*)/g)) {
+    const n = Number(m[2]), token = m[1] + m[2] + m[3];
+    if (SCREEN_SIZES.has(n) && token.length >= 7) out.inch.add(n);      // a model code, e.g. qa65s90haelxl
+  }
+  for (const m of t.matchAll(/(\d{2,4})\s*gb\b/g)) out.gb.add(Number(m[1]));
+  for (const m of t.matchAll(/(\d)\s*tb\b/g)) out.gb.add(Number(m[1]) * 1024);
+  for (const m of t.matchAll(/(\d{1,2}(?:\.\d)?)\s*kg\b/g)) out.kg.add(Number(m[1]));
+  for (const m of t.matchAll(/(\d(?:\.\d)?)\s*ton\b/g)) out.ton.add(Number(m[1]));
+  for (const m of t.matchAll(/(\d{2,4})\s*(?:l|ltr|litres?|liters?)\b/g)) out.litre.add(Number(m[1]));
+  return out;
+}
+
+// False if the page names a different variant than the one wanted (for a kind the wanted variant specifies).
+// Only the page's title and address are checked: page text often lists every size in a size picker.
+function sameVariant(result, wanted) {
+  if (!wanted) return true;
+  const want = variantsIn(wanted);
+  const has = variantsIn(String(result.title || "") + " " + String(result.url || "").replace(/[-_/]/g, " "));
+  // Storage like "8 GB RAM, 256 GB" lists two numbers, so storage needs only one to match
+  for (const kind of Object.keys(want)) {
+    if (!want[kind].size || !has[kind].size) continue;
+    if (![...has[kind]].some((v) => want[kind].has(v))) return false;
+  }
+  return true;
+}
+
 // Brands' Indian websites: the domain to search, and the path an Indian page must have
 const BRAND_SITES = {
   samsung: ["samsung.com", "/in/"], lg: ["lg.com", "/in/"], sony: ["sony.co.in", ""],
@@ -157,21 +194,23 @@ async function searchPages(query, domains, withText) {
 
 // The exact product page for a model: the brand's Indian site first, then a large Indian store.
 // Returns { url, text } (the page's text, for reading its price), or null. 1 or 2 basic searches.
-const pickPage = (results, words, mustHave) => {
+const pickPage = (results, words, mustHave, variant) => {
   const hit = results.find((r) => {
     const url = String(r.url || "");
-    return url && !NOT_PRODUCT.test(url) && (!mustHave || url.toLowerCase().includes(mustHave)) && samePage(r, words);
+    return url && !NOT_PRODUCT.test(url) && (!mustHave || url.toLowerCase().includes(mustHave)) && samePage(r, words) && sameVariant(r, variant);
   });
   return hit ? { url: hit.url, text: hit.raw_content || "" } : null;
 };
-async function findProductPage(brand, words) {
+// variant: text naming the exact size or model, e.g. "65-inch, QA65S90HAELXL"; pages for other sizes are skipped
+async function findProductPage(brand, words, variant) {
   if (!process.env.TAVILY_API_KEY || !words) return null;
   const site = BRAND_SITES[String(brand || "").toLowerCase().replace(/[^a-z]/g, "")];
+  const query = [words, variant].filter(Boolean).join(" ");
   if (site) {
-    const onBrand = pickPage(await searchPages(words + " India", [site[0]], true), words, site[1]);
+    const onBrand = pickPage(await searchPages(query + " India", [site[0]], true), words, site[1], variant);
     if (onBrand) return onBrand;
   }
-  return pickPage(await searchPages(words, STORES, true), words, "");
+  return pickPage(await searchPages(query, STORES, true), words, "", variant);
 }
 
 /* ---------- Prices ---------- */
@@ -185,8 +224,8 @@ const PRICE_SCHEMA = {
   },
   required: ["isThisProduct", "price", "mrp"]
 };
-const pricePrompt = (words, page) => `This is the text of an Indian web page. Find the current selling price of exactly this product: "${words}".
-Use the price the page is selling it for now, not EMI amounts, exchange offers, bank-offer prices, accessories or other models. If the page shows no price for it, use 0.
+const pricePrompt = (words, page, variant) => `This is the text of an Indian web page. Find the current selling price of exactly this product: "${words}"${variant ? `, in this exact variant: ${variant}` : ""}.
+Use the price the page is selling this exact size or variant for now, not other sizes, EMI amounts, exchange offers, bank-offer prices, accessories or other models. If the page doesn't show a price for this exact variant, use 0, and set isThisProduct to false if the page is for a different size or variant.
 Page text:
 ${String(page).slice(0, 20000)}`;
 
@@ -197,23 +236,24 @@ const onPage = (n, text) => {
   return [plain, indian, western].some((f) => text.indexOf(f) >= 0);
 };
 
-async function priceFromPage(page, words, extract) {
+async function priceFromPage(page, words, extract, variant) {
   if (!page || !page.text) return null;
   try {
-    const out = await extract(pricePrompt(words, page.text), PRICE_SCHEMA);
+    const out = await extract(pricePrompt(words, page.text, variant), PRICE_SCHEMA);
     if (!out || out.isThisProduct === false || !onPage(out.price, page.text)) return null;
     return { amount: out.price, mrp: out.mrp > out.price && onPage(out.mrp, page.text) ? out.mrp : 0, url: page.url };
   } catch (e) { return null; }
 }
 
 // Current price for a model: from its page if that shows one, otherwise from a large Indian store
-async function findPrice(page, words, extract) {
+async function findPrice(page, words, extract, variant) {
   if (!process.env.TAVILY_API_KEY || !words) return null;
-  const fromPage = await priceFromPage(page, words, extract);
+  const fromPage = await priceFromPage(page, words, extract, variant);
   if (fromPage) return fromPage;
   const isStore = page && STORES.some((d) => String(page.url).includes(d));
   if (isStore) return null; // already tried a store page
-  return priceFromPage(pickPage(await searchPages(words + " price", STORES, true), words, ""), words, extract);
+  const query = [words, variant, "price"].filter(Boolean).join(" ");
+  return priceFromPage(pickPage(await searchPages(query, STORES, true), words, "", variant), words, extract, variant);
 }
 
-module.exports = { tavilyReviews, findStoreLinks, findProductPage, findPrice, RETAILERS };
+module.exports = { tavilyReviews, findStoreLinks, findProductPage, findPrice, sameVariant, variantsIn, RETAILERS };
