@@ -504,6 +504,11 @@
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const plural = (n, word) => n + " " + word + (n === 1 ? "" : "s");
+// Remove internal review ids from text people read: "(R42)", "(R3, R13)", "R25, YouTube" -> "YouTube"
+const noIds = (t) => String(t == null ? "" : t)
+  .replace(/\s*\((?:R\d+(?:\s*(?:,|and|&)\s*)?)+\)/g, "")
+  .replace(/^R\d+,\s*/, "")
+  .replace(/\s+([.,;:])/g, "$1");
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 const dateLabel = (d) => { if (!d) return "Undated"; const p = d.split("-"); return p[2] ? MONTHS[+p[1] - 1] + " " + (+p[2]) + ", " + p[0] : MONTHS[+p[1] - 1] + " " + p[0]; };
 
@@ -600,7 +605,7 @@ function renderAll() {
 
   const sm = D.summary || {};
   $("verdict").innerHTML =
-    '<p class="headline">' + esc(sm.headline) + "</p>" +
+    '<p class="headline">' + esc(noIds(sm.headline)) + "</p>" +
     '<div class="stats">' + (sm.stats || []).map((s) => "<div><b>" + esc(s.value) + "</b><span>" + esc(s.label) + "</span></div>").join("") + "</div>" +
     (sm.note ? '<p class="trust">' + ICON_SHIELD + "<span>" + esc(sm.note) + "</span></p>" : "");
 
@@ -626,10 +631,10 @@ function accItem(item, first) {
       (item.later ? '<span class="later">Shows up later</span>' : "") + "</span></span>" + ICON_CHEV +
     "</button>" +
     (open ? '<div class="acc-body" id="acc-' + esc(item.id) + '">' +
-      '<p class="lead">' + esc(item.text) + "</p>" +
-      (item.when ? '<p class="when"><b>When it shows up:</b> ' + esc(item.when) + "</p>" : "") +
-      (item.notes && item.notes.length ? '<div class="notes">' + item.notes.map((n) => "<p><b>" + esc(n.label) + ":</b> " + esc(n.text) + "</p>").join("") + "</div>" : "") +
-      (item.quotes || []).map((q) => '<p class="quote">“' + esc(q.text) + "” <span>" + esc(q.ref) + "</span></p>").join("") +
+      '<p class="lead">' + esc(noIds(item.text)) + "</p>" +
+      (item.when ? '<p class="when"><b>When it shows up:</b> ' + esc(noIds(item.when)) + "</p>" : "") +
+      (item.notes && item.notes.length ? '<div class="notes">' + item.notes.map((n) => "<p><b>" + esc(n.label) + ":</b> " + esc(noIds(n.text)) + "</p>").join("") + "</div>" : "") +
+      (item.quotes || []).map((q) => '<p class="quote">“' + esc(q.text) + "” <span>" + esc(noIds(q.ref)) + "</span></p>").join("") +
       (total ? '<button type="button" class="link-btn" data-open="' + esc(item.panel) + '" data-group="' + (item.panelGroup != null ? item.panelGroup : (item.tone === "negative" ? "neg" : 0)) + '">See all ' + plural(total, "review") + "</button>" : "") +
     "</div>" : "") +
   "</li>";
@@ -651,11 +656,11 @@ function renderDisagreements() {
   const rows = D.disagreements || [];
   $("disagree-section").hidden = !rows.length;
   $("disagree-rows").innerHTML = rows.map((r) => {
-    const side = (s) => '<td class="side"><div class="ttl">' + esc(s.title) + "</div><p>" + esc(s.text) + '</p><p class="m">' + esc(s.meta) + "</p></td>";
+    const side = (s) => '<td class="side"><div class="ttl">' + esc(s.title) + "</div><p>" + esc(noIds(s.text)) + '</p><p class="m">' + esc(s.meta) + "</p></td>";
     return '<tr class="row"><th scope="row">' + esc(r.theme) + "<small>" + esc(r.count) + "</small>" +
       (r.panel ? '<span class="see"><button type="button" class="link-btn" data-open="' + esc(r.panel) + '" data-group="0">See the reviews</button></span>' : "") + "</th>" +
       side(r.a) + side(r.b) + "</tr>" +
-      '<tr class="expl"><td></td><td colspan="2" class="expl-cell"><div class="explain">' + ICON_BULB + "<span><b>Possible explanation:</b> " + esc(r.explanation) + "</span></div></td></tr>";
+      '<tr class="expl"><td></td><td colspan="2" class="expl-cell"><div class="explain">' + ICON_BULB + "<span><b>Possible explanation:</b> " + esc(noIds(r.explanation)) + "</span></div></td></tr>";
   }).join("");
 }
 
@@ -712,7 +717,7 @@ function reviewCard(r, themes) {
   (themes || []).forEach((t) => ((r.hl && r.hl[t]) || []).forEach((x) => { if (phrases.indexOf(x) < 0) phrases.push(x); }));
   const body = (r.summarised ? '<p class="ai-note">AI summary of this review, not the owner’s exact words</p>' : "") + '<p class="txt">' + highlight(r.text || "", phrases) + "</p>";
   const link = r.url ? '<a class="src" href="' + esc(r.url) + '" target="_blank" rel="noopener">View on ' + esc(r.site) + " ↗</a>" : '<span class="nolink">No link to the original</span>';
-  const rec = '<span class="rec">Record ' + esc(r.id) + "</span>";
+  const rec = ""; // internal review ids aren't shown to shoppers
   const look = lookFor(r.site);
   let html;
   if (look === "a") {
@@ -780,7 +785,7 @@ function renderAllReviews() {
   else if (!A.topics.length) $("answer").innerHTML = '<div class="answer"><div class="answer-head"><p>“' + esc(A.asked) + '”</p><button type="button" class="link-btn" data-clear>Clear</button></div><p class="none">None of these reviews talk about that. Try asking about brightness, gaming, sports, sound, apps or value.</p></div>';
   else $("answer").innerHTML = '<div class="answer"><div class="answer-head"><p>“' + esc(A.asked) + '”</p><button type="button" class="link-btn" data-clear>Clear</button></div>' +
     "<ul>" + A.lines.map((l) => "<li><b>" + esc(l.title) + ":</b> " + esc(l.text) + "</li>").join("") + "</ul>" +
-    (A.notes.length ? '<p class="why"><b>Possible explanation:</b> ' + esc(A.notes.join(" ")) + "</p>" : "") +
+    (A.notes.length ? '<p class="why"><b>Possible explanation:</b> ' + esc(noIds(A.notes.join(" "))) + "</p>" : "") +
     '<p class="small">ReviewWise doesn’t make buying calls. It shows what owners in a similar situation report, and the reviews below are filtered to match.</p></div>';
 
   const base = A.asked && A.topics.length ? reviews.filter(A.matches) : reviews;
