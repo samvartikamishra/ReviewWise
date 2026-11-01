@@ -130,4 +130,47 @@ async function findStoreLinks(productName) {
   return { amazon, flipkart };
 }
 
-module.exports = { tavilyReviews, findStoreLinks, RETAILERS };
+// Brands' Indian websites: the domain to search, and the path an Indian page must have
+const BRAND_SITES = {
+  samsung: ["samsung.com", "/in/"], lg: ["lg.com", "/in/"], sony: ["sony.co.in", ""],
+  xiaomi: ["mi.com", "/in/"], mi: ["mi.com", "/in/"], redmi: ["mi.com", "/in/"],
+  oneplus: ["oneplus.in", ""], panasonic: ["panasonic.com", "/in/"], philips: ["philips.co.in", ""],
+  haier: ["haier.com", "/in/"], tcl: ["tcl.com", "/in/"], apple: ["apple.com", "/in/"]
+};
+// Stores used when the brand's own site doesn't have the page
+const STORES = ["croma.com", "reliancedigital.in", "tatacliq.com", "vijaysales.com", "amazon.in", "flipkart.com"];
+// Search, category and listing pages aren't product pages
+const NOT_PRODUCT = /([?&](q|query|text|search)=|\/search|\/s\?|\/c\/|\/category|\/compare|\/all-|\/offers|\/deals)/i;
+
+async function searchPages(query, domains) {
+  try {
+    const res = await fetch("https://api.tavily.com/search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer " + process.env.TAVILY_API_KEY },
+      body: JSON.stringify({ query, search_depth: "basic", include_domains: domains, include_domains_mode: "restrict", max_results: 8, country: "india" })
+    });
+    const data = await res.json().catch(() => ({}));
+    return res.ok ? data.results || [] : [];
+  } catch (e) { return []; }
+}
+
+// The exact product page for a model: the brand's Indian site first, then a large Indian store.
+// Returns a page address, or null if neither has it. One or two basic searches (1 credit each).
+async function findProductPage(brand, words) {
+  if (!process.env.TAVILY_API_KEY || !words) return null;
+  const site = BRAND_SITES[String(brand || "").toLowerCase().replace(/[^a-z]/g, "")];
+  const pick = (results, mustHave) => {
+    const hit = results.find((r) => {
+      const url = String(r.url || "");
+      return url && !NOT_PRODUCT.test(url) && (!mustHave || url.toLowerCase().includes(mustHave)) && samePage(r, words);
+    });
+    return hit ? hit.url : null;
+  };
+  if (site) {
+    const onBrand = pick(await searchPages(words + " India", [site[0]]), site[1]);
+    if (onBrand) return onBrand;
+  }
+  return pick(await searchPages(words, STORES), "");
+}
+
+module.exports = { tavilyReviews, findStoreLinks, findProductPage, RETAILERS };
