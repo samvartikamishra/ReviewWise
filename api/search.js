@@ -159,6 +159,9 @@ function nameFromLink(url) {
 // Product kinds for the page icon; Task 1 picks one (the page has a matching icon for each)
 const PRODUCT_KINDS = ["smartphone", "tablet", "laptop", "desktop computer", "monitor", "television", "projector", "headphones", "earbuds", "smartwatch or fitness band", "speaker or soundbar", "camera", "drone", "gaming console or controller", "keyboard", "mouse", "printer", "router or wifi device", "hard drive or SSD", "pen drive or memory card", "power bank", "charger or adapter", "cable", "refrigerator", "washing machine", "air conditioner", "fan or air cooler", "heater or geyser", "microwave or oven", "mixer, blender or juicer", "cookware or kitchen appliance", "coffee machine", "water purifier", "vacuum cleaner", "light or bulb", "lamp", "trimmer or grooming", "toothbrush", "weighing scale", "furniture", "bed or mattress", "clothing", "shoes", "bag or luggage", "eyewear", "jewellery", "book", "toy", "baby product", "bicycle", "car or car accessory", "fitness equipment", "musical instrument", "health product", "calculator", "solar panel", "flashlight", "other"];
 
+// YouTube comments may make up about 40% of the reviews at most (at least 25 when stores have few)
+const youtubeCap = (storeReviews) => Math.max(25, Math.round(storeReviews * 2 / 3));
+
 // Search-grounded answers can't be forced into a schema, so read the JSON out of the text.
 function readJson(text) {
   const clean = String(text || "").replace(/```json|```/g, "");
@@ -382,6 +385,7 @@ Themes (use these ids only): ${themes.map((t) => t.id + " = " + t.title).join(";
 Situations (use these labels only): ${situations.map((x) => x.label).join("; ") || "none"}
 For each review, list the themes it mentions, its stance on each, and copy the exact sentences that mention the theme, character for character.
 Mark reviews that are off-topic or look fake. A review is off-topic unless the writer has used the product, so "just ordered it, can't wait" is off-topic. A review can mention no themes.
+Be strict with entries marked [YouTube]: they are comments under videos, not reviews. Mark a YouTube comment off-topic unless the commenter clearly owns or has used this exact model (not another model, size or brand) and says something specific about it. Praise for the video, general opinions about the brand, and questions are off-topic.
 Reviews:
 ${batch.map((r) => r.id + " [" + r.site + ", " + (r.rating || "no") + " stars]: " + r.text).join("\n")}`;
 }
@@ -477,6 +481,8 @@ function build(q, info, infoSources, rawReviews, reviewSources, tags, insight) {
     if (!t) return;
     if (t.suspicious) { suspicious++; return; }
     if (t.offTopic) { offTopic++; return; }
+    const mentionsTopic = (t.mentions || []).some((m) => themeIds.indexOf(slug(m.theme)) >= 0 && (m.sentences || []).length);
+    if (r.sourceKind === "comment" && !mentionsTopic) { offTopic++; return; } // a comment that says nothing about any topic
     const hl = {}, stances = {}, later = {};
     (t.mentions || []).forEach((m) => {
       const id = slug(m.theme);
@@ -487,6 +493,12 @@ function build(q, info, infoSources, rawReviews, reviewSources, tags, insight) {
     });
     reviews.push(Object.assign({}, r, { sentiment: t.sentiment, contexts: t.situations || [], hl, stances, later }));
   });
+  // The real YouTube cap, now that off-topic comments are gone
+  const storeKept = reviews.filter((r) => r.sourceKind !== "comment").length;
+  let ytKept = 0;
+  for (let i = 0; i < reviews.length; i++) {
+    if (reviews[i].sourceKind === "comment" && ++ytKept > youtubeCap(storeKept)) { reviews.splice(i, 1); i--; }
+  }
   if (!reviews.length) throw new Error("No usable reviews were found for this product. Try a more specific product name.");
   const byId = {}; reviews.forEach((r) => { byId[r.id] = r; });
 
@@ -712,6 +724,15 @@ module.exports = async (req, res) => {
       seen.push(key);
       found.push(Object.assign({}, r, { from: t.label })); // remember which source it came from
     }));
+    // Before tagging, keep at most 1.5 times the YouTube cap (the real cap is applied after tagging,
+    // once off-topic comments are gone). Comments are ordered owners-first, then by likes.
+    const fromStores = found.filter((r) => r.sourceKind !== "comment").length;
+    const ytCap = Math.round(youtubeCap(fromStores) * 1.5);
+    let ytSeen = 0;
+    for (let i = 0; i < found.length; i++) {
+      if (found[i].sourceKind === "comment" && ++ytSeen > ytCap) { found.splice(i, 1); i--; }
+    }
+
     const report = "Task 1 ran " + t1.queries.length + " searches | " +
       bySource.filter((t) => !t.skipped).map((t) => t.label + ": " + (t.problem || t.reviews.length + " reviews")).join(" | ");
     const usable = found.filter((r) => r && typeof r.text === "string" && r.text.trim().length > 20);
