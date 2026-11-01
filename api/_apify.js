@@ -93,9 +93,9 @@ async function flipkartReviews(url, productName) {
   try {
     const rows = await runActor(FLIPKART_ACTOR, { startUrls: [{ url: link }], maxItems: MAX, maxPagesPerProduct: Math.ceil(MAX / 10) });
     const reviews = rows.map((r) => toReview(r, "Flipkart", link)).filter((r) => r.text.length >= 15);
-    return { label: "Flipkart (Apify)", reviews, problem: reviews.length ? "" : "collector returned no reviews" };
+    return { label: "Flipkart (Apify)", reviews, link, problem: reviews.length ? "" : "collector returned " + (rows.length ? rows.length + " rows but no review text" : "no reviews") + " for " + link };
   } catch (err) {
-    return { label: "Flipkart (Apify)", reviews: [], problem: err.message };
+    return { label: "Flipkart (Apify)", reviews: [], link, problem: err.message + " (page: " + link + ")" };
   }
 }
 
@@ -110,9 +110,9 @@ async function amazonReviews(url, productName) {
       return { label: "Amazon (Apify)", reviews: [], problem: "the Amazon link was for a different product" };
     }
     const reviews = rows.map((r) => toReview(r, "Amazon", link)).filter((r) => r.text.length >= 15);
-    return { label: "Amazon (Apify)", reviews, problem: reviews.length ? "" : "collector returned no reviews" };
+    return { label: "Amazon (Apify)", reviews, link, problem: reviews.length ? "" : "collector returned " + (rows.length ? rows.length + " rows but no review text" : "no reviews") + " for " + link };
   } catch (err) {
-    return { label: "Amazon (Apify)", reviews: [], problem: err.message };
+    return { label: "Amazon (Apify)", reviews: [], link, problem: err.message + " (page: " + link + ")" };
   }
 }
 
