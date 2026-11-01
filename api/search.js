@@ -27,7 +27,7 @@
 const SAMPLE = require("./_sample.json");
 const { youtubeReviews, isHindi } = require("./_youtube.js");
 const { flipkartReviews, amazonReviews, amazonLink, flipkartLink } = require("./_apify.js");
-const { tavilyReviews, findStoreLinks, findProductPage } = require("./_tavily.js");
+const { tavilyReviews, findStoreLinks, findProductPage, findPrice } = require("./_tavily.js");
 
 const MODEL = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
 const API = "https://generativelanguage.googleapis.com/v1beta/models/";
@@ -219,6 +219,15 @@ const BRAND_SITES = {
   haier: "https://www.haier.com/in/", tcl: "https://www.tcl.com/in/en", apple: "https://www.apple.com/in/"
 };
 
+// A price for the page: a checked store or brand price if found, otherwise Task 1's web estimate
+function priceFor(found, estimate, brand) {
+  if (found && found.amount) {
+    return { amount: found.amount, mrp: found.mrp || 0, where: storeName(found.url) || ((brand || "Brand") + " India"), url: found.url, checked: new Date().toISOString().slice(0, 10), estimate: false };
+  }
+  const n = Math.round(Number(String(estimate || "").replace(/[^0-9.]/g, "")) || 0);
+  return n >= 100 ? { amount: n, estimate: true } : null;
+}
+
 // Store pages are labelled with the store's name rather than as the brand's official listing
 const STORE_NAMES = { "croma.com": "Croma", "reliancedigital.in": "Reliance Digital", "tatacliq.com": "Tata CLiQ", "vijaysales.com": "Vijay Sales", "amazon.in": "Amazon.in", "flipkart.com": "Flipkart" };
 function storeName(url) { const h = hostOf(url); const d = Object.keys(STORE_NAMES).find((k) => h === k || h.endsWith("." + k)); return d ? STORE_NAMES[d] : ""; }
@@ -260,11 +269,12 @@ Reply with only this JSON object, no other text:
  "category": "short category, e.g. OLED TV",
  "kind": "the closest of these product kinds: ${PRODUCT_KINDS.join(", ")}",
  "description": "one short line, e.g. 65-inch 4K OLED TV, 2025 model, Indian model number if different",
+ "priceInr": "typical current selling price in India in rupees, as a plain number, or 0 if unsure",
  "officialUrl": "URL of the official product page on the manufacturer's Indian site, or empty",
  "amazonUrl": "the product's amazon.in page, a URL containing /dp/ and the 10-character ASIN, or empty",
  "flipkartUrl": "the product's flipkart.com page, a URL containing /p/itm and pid=, or empty",
  "warranty": { "summary": "warranty in India, e.g. 1-year comprehensive warranty, plus any extra panel warranty", "covered": ["..."], "notCovered": ["..."], "sourceUrl": "URL" },
- "competitors": [ { "brand": "", "name": "", "model": "size and Indian model number", "tags": ["year", "panel type", "one key feature"], "url": "official Indian page URL" } ]
+ "competitors": [ { "brand": "", "name": "", "model": "size and Indian model number", "tags": ["year", "panel type", "one key feature"], "priceInr": "typical selling price in India in rupees, or 0", "url": "official Indian page URL" } ]
 }
 Only include facts and links you found in search results; never make up a link. Use empty strings or empty lists when unsure.`;
 }
@@ -587,6 +597,7 @@ function finish(q, info, ins, reviews, byId, panels, themes, tags, suspicious, o
     product: {
       kicker: [brand, info.category].filter(Boolean).join(" / ").toUpperCase(),
       category: info.category || "",
+      price: priceFor(info.officialPrice, info.priceInr, brand),
       kind: PRODUCT_KINDS.find((k) => k.toLowerCase() === String(info.kind || "").trim().toLowerCase()) || "",
       brand, name: info.name || q, description: info.description || "",
       short: [brand, info.description].filter(Boolean).join(" · "),
@@ -615,7 +626,8 @@ function finish(q, info, ins, reviews, byId, panels, themes, tags, suspicious, o
       const page = info.competitorPages && info.competitorPages[i];   // exact page found by Tavily
       const link = page ? { url: page, label: storeName(page) || siteLabel(page), kind: "page" }
         : bestLink(c.url, c.brand, [c.brand, c.name, c.model].filter(Boolean).join(" "), allSources);
-      return { brand: (c.brand || "").toUpperCase(), name: c.name, model: c.model || "", tags: c.tags || [], url: link.url, site: link.label };
+      const price = priceFor(info.competitorPrices && info.competitorPrices[i], c.priceInr, c.brand);
+      return { brand: (c.brand || "").toUpperCase(), name: c.name, model: c.model || "", tags: c.tags || [], url: link.url, site: link.label, price };
     }),
     competitorsNote: "Their reviews haven’t been analyzed here, so no ratings or claims are shown for them.",
     reviews: reviews.map((r) => ({ id: r.id, site: r.site, date: r.date, rating: r.rating, verified: r.verified, url: r.url, sentiment: r.sentiment, summarised: r.summarised, sourceKind: r.sourceKind, text: r.text, contexts: r.contexts, hl: r.hl })),
@@ -692,12 +704,17 @@ module.exports = async (req, res) => {
       return Promise.all([flipkartReviews(flipkart, name), amazonReviews(amazon, name), tavilyReviews(name, extract), youtubeReviews(name)]);
     }).catch(() => []);
     // Exact product pages for this product and its competitors, looked up while reviews are collected
-    const pagesPromise = infoPromise.then((info) => {
+    const pagesPromise = infoPromise.then(async (info) => {
       info.competitors = (info.competitors || []).slice(0, 3).filter((c) => c && c.name);
-      return Promise.all([
-        findProductPage(info.brand, [info.brand, info.name].filter(Boolean).join(" ")),
-        ...info.competitors.map((c) => findProductPage(c.brand, [c.brand, c.name, c.model].filter(Boolean).join(" ")))
-      ]).then(([official, ...rivals]) => { info.officialPage = official; info.competitorPages = rivals; });
+      const items = [{ brand: info.brand, words: [info.brand, info.name].filter(Boolean).join(" ") }]
+        .concat(info.competitors.map((c) => ({ brand: c.brand, words: [c.brand, c.name, c.model].filter(Boolean).join(" ") })));
+      const readPage = async (prompt, schema) => readJson((await gemini({ prompt, schema })).text); // Gemini reads a page
+      const pages = await Promise.all(items.map((it) => findProductPage(it.brand, it.words).catch(() => null)));
+      const prices = await Promise.all(items.map((it, k) => findPrice(pages[k], it.words, readPage).catch(() => null)));
+      info.officialPage = pages[0] && pages[0].url;
+      info.competitorPages = pages.slice(1).map((pg) => pg && pg.url);
+      info.officialPrice = prices[0];
+      info.competitorPrices = prices.slice(1);
     }).catch(() => {});
     const [t1, info, extras, , ...geminiSearches] = await Promise.all([
       t1Promise, infoPromise, extraPromise, pagesPromise,
