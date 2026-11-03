@@ -67,8 +67,10 @@ const queryKey = (q) => CACHE_VERSION + ":query:" + q.toLowerCase().replace(/[^a
 /* Talking to Gemini                                                   */
 /* ------------------------------------------------------------------ */
 
-async function gemini({ prompt, search = false, readPages = false, schema = null }) {
+// light: think less, for tagging, reading pages and writing; much faster, and these tasks don't need deep reasoning
+async function gemini({ prompt, search = false, readPages = false, schema = null, light = false }) {
   const body = { contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: {} };
+  if (light) body.generationConfig.thinkingConfig = { thinkingLevel: "low" };
   if (search) body.tools = [{ google_search: {} }];
   if (search && readPages) body.tools.push({ url_context: {} }); // lets Gemini open the pages it finds
   if (schema) {
@@ -87,8 +89,11 @@ async function gemini({ prompt, search = false, readPages = false, schema = null
     await new Promise((r) => setTimeout(r, 1500 * (attempt + 1))); // busy or rate-limited: wait, then retry
   }
   const data = await res.json().catch(() => ({}));
+  if (!res.ok && light && res.status === 400 && /think/i.test(JSON.stringify(data))) {
+    return gemini({ prompt, search, readPages, schema, light: false }); // this model doesn't take the setting
+  }
   if (!res.ok && readPages && res.status === 400) {
-    return gemini({ prompt, search, readPages: false, schema }); // page reading not available: search only
+    return gemini({ prompt, search, readPages: false, schema, light }); // page reading not available: search only
   }
   if (!res.ok) {
     const msg = (data.error && data.error.message) || "Gemini request failed";
@@ -162,6 +167,16 @@ const PRODUCT_KINDS = ["smartphone", "tablet", "laptop", "desktop computer", "mo
 
 // YouTube comments may make up about 40% of the reviews at most (at least 25 when stores have few)
 const youtubeCap = (storeReviews) => Math.max(25, Math.round(storeReviews * 2 / 3));
+
+// Gives a slow source a time limit; when it runs out, the search carries on without that source
+function withDeadline(promise, ms, fallback) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((resolve) => { timer = setTimeout(() => resolve(typeof fallback === "function" ? fallback() : fallback), ms); })
+  ]).finally(() => clearTimeout(timer));
+}
+const LIMITS = { stores: 60000, retailers: 35000, youtube: 25000, pages: 35000, googleSearch: 40000 }; // milliseconds
 
 // Search-grounded answers can't be forced into a schema, so read the JSON out of the text.
 function readJson(text) {
@@ -288,8 +303,8 @@ Only include facts and links you found in search results; never make up a link. 
 
 // Each Task 2 search looks at a different kind of source, so together they cover more ground.
 const REVIEW_SEARCHES = [
-  { label: "Google search: Amazon", focus: "Amazon India (amazon.in) customer reviews", queries: (q) => [`"${q}" reviews site:amazon.in`, `${q} amazon.in customer review`] },
-  { label: "Google search: Flipkart", focus: "Flipkart (flipkart.com) customer reviews and ratings", queries: (q) => [`"${q}" reviews site:flipkart.com`, `${q} flipkart ratings and reviews`] },
+  { label: "Google search: Amazon", store: true, focus: "Amazon India (amazon.in) customer reviews", queries: (q) => [`"${q}" reviews site:amazon.in`, `${q} amazon.in customer review`] },
+  { label: "Google search: Flipkart", store: true, focus: "Flipkart (flipkart.com) customer reviews and ratings", queries: (q) => [`"${q}" reviews site:flipkart.com`, `${q} flipkart ratings and reviews`] },
   { label: "Google search: Croma and Reliance Digital", retailers: true, focus: "customer reviews on Croma (croma.com) and Reliance Digital (reliancedigital.in)", queries: (q) => [`${q} reviews site:croma.com`, `${q} reviews site:reliancedigital.in`] },
   { label: "Google search: Other stores", retailers: true, focus: "customer reviews on Vijay Sales, Tata CLiQ, JioMart and the brand's Indian website", queries: (q) => [`${q} customer reviews vijay sales`, `${q} reviews tata cliq`, `${q} reviews ratings india`] },
   { label: "Google search: Indian tech sites", focus: "user reviews and owner comments on Indian tech sites such as 91mobiles, Smartprix, MySmartPrice and Gadgets 360 (user reviews only, not the editors' reviews)", queries: (q) => [`${q} user reviews 91mobiles`, `${q} user reviews smartprix`, `${q} owner review india`] },
@@ -405,7 +420,7 @@ ${batch.map((r) => r.id + " [" + r.site + ", " + (r.rating || "no") + " stars]: 
 
 // Runs both steps: topics first, then all batches at the same time
 async function tagReviews(product, reviews) {
-  const t = await step("Task 3 (picking topics)", () => gemini({ prompt: themePrompt(product, reviews), schema: THEME_SCHEMA }));
+  const t = await step("Task 3 (picking topics)", () => gemini({ prompt: themePrompt(product, reviews), schema: THEME_SCHEMA, light: true }));
   const picked = await step("Task 3 (reading the topics)", async () => readJson(t.text));
   const themes = (picked.themes || []).map((x) => Object.assign({}, x, { id: slug(x.id) })).filter((x) => x.id);
   const situations = picked.situations || [];
@@ -416,7 +431,7 @@ async function tagReviews(product, reviews) {
   for (let i = 0; i < reviews.length; i += TAG_BATCH) batches.push(reviews.slice(i, i + TAG_BATCH));
   const tagged = await Promise.all(batches.map((batch, n) =>
     step("Task 3 (tagging batch " + (n + 1) + " of " + batches.length + ")", async () =>
-      readJson((await gemini({ prompt: tagPrompt(product, themes, situations, batch), schema })).text).reviews || [])
+      readJson((await gemini({ prompt: tagPrompt(product, themes, situations, batch), schema, light: true })).text).reviews || [])
       .catch(() => []) // one failed batch only loses its own tags; those reviews are left out
   ));
   return { themes, situations, reviews: [].concat(...tagged) };
@@ -679,8 +694,22 @@ module.exports = async (req, res) => {
       }
     }
 
-    // Task 1 first: identify the product, then reuse a saved analysis of it if there is one
-    const t1Done = await step("Task 1 (identifying the product)", () => gemini({ prompt: task1Prompt(text, link), search: true }));
+    // How long each step took, kept in the result for checking what's slow
+    const started = Date.now(), timings = {};
+    const timed = (name, promise) => { const t = Date.now(); return Promise.resolve(promise).finally(() => { timings[name] = Math.round((Date.now() - t) / 100) / 10; }); };
+
+    // For a typed product name, the review searches and the store-link lookup don't need Task 1's answer,
+    // so they start now, alongside it. (For a pasted link they wait for Task 1 to name the product.)
+    const searchesToRun = REVIEW_SEARCHES
+      .filter((search) => !(process.env.TAVILY_API_KEY && search.retailers)) // Tavily reads these retailers directly
+      .filter((search) => !(process.env.APIFY_TOKEN && search.store));       // the Apify collectors cover these stores
+    const runSearches = (words) => searchesToRun.map((search) =>
+      timed(search.label, withDeadline(collectReviews(words, search), LIMITS.googleSearch, { label: search.label, reviews: [], sources: [], problem: "took too long, skipped" })));
+    const earlySearches = link ? null : runSearches(q);
+    const earlyLinks = link ? null : timed("Store links", findStoreLinks(q, q).catch(() => ({})));
+
+    // Task 1: identify the product, then reuse a saved analysis of it if there is one
+    const t1Done = await timed("Task 1", step("Task 1 (identifying the product)", () => gemini({ prompt: task1Prompt(text, link), search: true })));
     const infoDone = await step("Task 1 (reading the product details)", async () => readJson(t1Done.text));
     // What the review searches look for: the shopper's words, or for a link, the product Task 1 identified
     const searchText = link ? ([infoDone.brand, infoDone.name].filter(Boolean).join(" ") || text) : q;
@@ -700,11 +729,18 @@ module.exports = async (req, res) => {
     const extraPromise = infoPromise.then(async (info) => {
       const name = [info.brand, info.name].filter(Boolean).join(" ") || searchText;
       // Store links: a pasted link first, then one Tavily found, then one from Gemini's search
-      const found = (amazonLink(link) && flipkartLink(link)) ? {} : await findStoreLinks(name);
+      const variant = [info.variant, info.modelNumber, link ? "" : q].filter(Boolean).join(", ");
+      const found = (amazonLink(link) && flipkartLink(link)) ? {} : (earlyLinks ? await earlyLinks : await findStoreLinks(name, variant));
       const amazon = amazonLink(link) || amazonLink(found.amazon) || amazonLink(info.amazonUrl);
       const flipkart = flipkartLink(link) || flipkartLink(found.flipkart) || flipkartLink(info.flipkartUrl);
-      const extract = async (prompt, schema) => readJson((await gemini({ prompt, schema })).text); // Gemini reads Tavily's pages
-      return Promise.all([flipkartReviews(flipkart, name), amazonReviews(amazon, name), tavilyReviews(name, extract), youtubeReviews(name)]);
+      const extract = async (prompt, schema) => readJson((await gemini({ prompt, schema, light: true })).text); // Gemini reads Tavily's pages
+      const late = (label) => ({ label, reviews: [], problem: "took too long, skipped" });
+      return Promise.all([
+        timed("Flipkart (Apify)", withDeadline(flipkartReviews(flipkart, name), LIMITS.stores, late("Flipkart (Apify)"))),
+        timed("Amazon (Apify)", withDeadline(amazonReviews(amazon, name), LIMITS.stores, late("Amazon (Apify)"))),
+        timed("Large retailers (Tavily)", withDeadline(tavilyReviews(name, extract), LIMITS.retailers, late("Large retailers (Tavily)"))),
+        timed("YouTube", withDeadline(youtubeReviews(name), LIMITS.youtube, late("YouTube")))
+      ]);
     }).catch(() => []);
     // Exact product pages for this product and its competitors, looked up while reviews are collected
     const pagesPromise = infoPromise.then(async (info) => {
@@ -713,7 +749,7 @@ module.exports = async (req, res) => {
       const mainVariant = [info.variant, info.modelNumber, link ? "" : q].filter(Boolean).join(", ");
       const items = [{ brand: info.brand, words: [info.brand, info.name].filter(Boolean).join(" "), variant: mainVariant }]
         .concat(info.competitors.map((c) => ({ brand: c.brand, words: [c.brand, c.name].filter(Boolean).join(" "), variant: c.model || "" })));
-      const readPage = async (prompt, schema) => readJson((await gemini({ prompt, schema })).text); // Gemini reads a page
+      const readPage = async (prompt, schema) => readJson((await gemini({ prompt, schema, light: true })).text); // Gemini reads a page
       const pages = await Promise.all(items.map((it) => findProductPage(it.brand, it.words, it.variant).catch(() => null)));
       const prices = await Promise.all(items.map((it, k) => findPrice(pages[k], it.words, readPage, it.variant).catch(() => null)));
       info.officialPage = pages[0] && pages[0].url;
@@ -721,12 +757,12 @@ module.exports = async (req, res) => {
       info.officialPrice = prices[0];
       info.competitorPrices = prices.slice(1);
     }).catch(() => {});
+    const pagesLimited = timed("Product pages and prices", withDeadline(pagesPromise, LIMITS.pages, undefined));
     const [t1, info, extras, , ...geminiSearches] = await Promise.all([
-      t1Promise, infoPromise, extraPromise, pagesPromise,
-      ...REVIEW_SEARCHES
-        .filter((search) => !(process.env.TAVILY_API_KEY && search.retailers)) // Tavily reads these retailers directly
-        .map((search) => collectReviews(searchText, search))
+      t1Promise, infoPromise, extraPromise, pagesLimited,
+      ...(earlySearches || runSearches(searchText))
     ]);
+    timings["Collecting reviews (all sources)"] = Math.round((Date.now() - started) / 100) / 10;
     if (info.found === false) return res.status(404).json({ error: "Couldn’t find that product. Try the brand and model number." });
 
     // Every source, most reliable first: store collectors, Tavily pages, Gemini searches, then YouTube comments
@@ -774,11 +810,11 @@ module.exports = async (req, res) => {
     const productName = [info.brand, info.name].filter(Boolean).join(" ") || searchText;
 
     // Task 3
-    const tags = await tagReviews(productName, raw);
+    const tags = await timed("Task 3 (tagging)", tagReviews(productName, raw));
     const b = await step("Task 3 (counting)", async () => build(q, info, t1.sources, raw, sources, tags));
 
     // Task 4
-    const t4 = await step("Task 4 (writing insights)", () => gemini({ prompt: task4Prompt(productName, b.themes, b.panels, b.reviews, tags.situations || []), schema: INSIGHT_SCHEMA }));
+    const t4 = await timed("Task 4 (writing)", step("Task 4 (writing insights)", () => gemini({ prompt: task4Prompt(productName, b.themes, b.panels, b.reviews, tags.situations || []), schema: INSIGHT_SCHEMA, light: true })));
     const result = await step("Task 4 (building the page)", async () => b.finish(readJson(t4.text)));
     // How each source did (kept in the data for troubleshooting, not shown on the page)
     // Counts only reviews that made it onto the page (after removing duplicates, Hindi, other countries and off-topic posts)
@@ -791,6 +827,8 @@ module.exports = async (req, res) => {
       page: t.link || undefined   // the store page a collector read, for checking it's the right product
     }));
 
+    timings.Total = Math.round((Date.now() - started) / 100) / 10;
+    result.timings = timings; // seconds per step, for troubleshooting
     result.analyzedAt = new Date().toISOString().slice(0, 10);
     result.category = infoDone.category || "";
     // Save under this product and this wording, for 7 days
