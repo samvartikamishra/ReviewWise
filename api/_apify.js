@@ -53,9 +53,9 @@ function sameProduct(title, name) {
   return !words.length || words.filter((w) => t.includes(w)).length >= Math.ceil(words.length * 0.5);
 }
 
-// Run a collector and wait for its results (up to about 2.5 minutes)
+// Run a collector and wait for its results (up to 55 seconds, so a slow store can't hold up the search)
 async function runActor(actor, input) {
-  const res = await fetch("https://api.apify.com/v2/acts/" + actor + "/run-sync-get-dataset-items?timeout=150", {
+  const res = await fetch("https://api.apify.com/v2/acts/" + actor + "/run-sync-get-dataset-items?timeout=55", {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: "Bearer " + process.env.APIFY_TOKEN },
     body: JSON.stringify(input)
