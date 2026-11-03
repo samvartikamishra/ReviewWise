@@ -651,7 +651,22 @@ async function search(query, push) {
   $("content").hidden = true;
   $("sample-note").hidden = true;
   $("status").hidden = false;
-  $("status").textContent = "Finding and reading reviews for “" + q + "”. This usually takes 20 to 60 seconds.";
+  // Steps shown while a new analysis runs (a saved result comes back before the first change)
+  const steps = [
+    "Identifying “" + q + "”…",
+    "Reading Flipkart and Amazon reviews…",
+    "Checking Croma, Reliance Digital, Tata CLiQ and Vijay Sales…",
+    "Collecting owner comments from YouTube…",
+    "Finding prices and competitors…",
+    "Sorting reviews by topic…",
+    "Writing the summary…",
+    "Almost done…"
+  ];
+  let stepNo = 0;
+  const showStep = () => { $("status").textContent = steps[Math.min(stepNo, steps.length - 1)] + " A new product takes about a minute."; };
+  showStep();
+  clearInterval(window.__progress);
+  window.__progress = setInterval(() => { stepNo += 1; showStep(); }, 9000);
   document.querySelectorAll("form[role=search] button").forEach((b) => { b.disabled = true; });
 
   try {
@@ -671,6 +686,7 @@ async function search(query, push) {
       ? "Search only works on the deployed site, because it needs the /api/search backend. Open your Vercel link instead of the file on your computer."
       : "Could not load reviews for “" + q + "”. " + err.message;
   } finally {
+    clearInterval(window.__progress);
     document.querySelectorAll("form[role=search] button").forEach((b) => { b.disabled = false; });
   }
 }
